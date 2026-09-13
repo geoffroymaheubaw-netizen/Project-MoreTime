@@ -1,5 +1,5 @@
 import React from 'react';
-import { Moon, Smartphone, Power, Clock, Check } from 'lucide-react';
+import { Moon, Power, Clock, Check, X, ShieldCheck } from 'lucide-react';
 import { ThemeMode } from '../types';
 import { playMinimalClick, playBedtimeChime, triggerBedtimeHaptic } from '../utils/audio';
 
@@ -7,6 +7,7 @@ interface CurfewAlertModalProps {
   isOpen: boolean;
   timeStr: string;
   message: string;
+  onConfirmStop: () => void;
   onDismiss: () => void;
   onSnooze: (minutes: number) => void;
   theme: ThemeMode;
@@ -17,6 +18,7 @@ export const CurfewAlertModal: React.FC<CurfewAlertModalProps> = ({
   isOpen,
   timeStr,
   message,
+  onConfirmStop,
   onDismiss,
   onSnooze,
   theme,
@@ -27,10 +29,10 @@ export const CurfewAlertModal: React.FC<CurfewAlertModalProps> = ({
   const isLight = theme === 'light';
   const isEink = theme === 'eink';
 
-  const handleTurnOff = () => {
+  const handleConfirm = () => {
     playBedtimeChime(soundEnabled);
     triggerBedtimeHaptic(true);
-    onDismiss();
+    onConfirmStop();
   };
 
   const handleSnooze = () => {
@@ -52,21 +54,31 @@ export const CurfewAlertModal: React.FC<CurfewAlertModalProps> = ({
             : 'bg-[#121213] border-neutral-800 text-neutral-100'
         }`}
       >
+        {/* Close/Minimize button */}
+        <button
+          onClick={onDismiss}
+          className="absolute top-4 right-4 p-1.5 rounded-full text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800/40 transition cursor-pointer"
+          title="Réduire"
+          aria-label="Réduire"
+        >
+          <X className="w-4 h-4" />
+        </button>
+
         {/* Soft pulsing moon icon */}
         <div
-          className={`w-16 h-16 rounded-full flex items-center justify-center mb-4 transition-all ${
+          className={`w-16 h-16 rounded-full flex items-center justify-center mb-3 transition-all ${
             isLight
               ? 'bg-amber-100 text-amber-600'
               : isEink
               ? 'bg-neutral-300 text-neutral-900'
-              : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+              : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
           }`}
         >
           <Moon className="w-8 h-8 animate-pulse" />
         </div>
 
         <span className="text-[11px] font-semibold uppercase tracking-widest text-amber-500 mb-1">
-          Rappel Déconnexion ({timeStr})
+          Couvre-feu actif ({timeStr})
         </span>
 
         <h3 className="text-xl font-semibold tracking-tight mb-2">
@@ -74,29 +86,35 @@ export const CurfewAlertModal: React.FC<CurfewAlertModalProps> = ({
         </h3>
 
         <p
-          className={`text-xs mb-6 max-w-xs leading-relaxed ${
+          className={`text-xs mb-5 max-w-xs leading-relaxed ${
             isLight ? 'text-neutral-600' : isEink ? 'text-neutral-700' : 'text-neutral-300'
           }`}
         >
           {message ||
-            "Vous avez atteint votre heure de déconnexion. Accordez à vos yeux et à votre esprit un repos bien mérité."}
+            "Vous avez atteint votre heure de déconnexion. Les notifications continueront d'arriver jusqu'à ce que vous confirmiez avoir posé votre téléphone."}
         </p>
 
         {/* Action buttons */}
         <div className="w-full flex flex-col gap-2.5">
+          {/* Main confirmation button */}
           <button
-            onClick={handleTurnOff}
-            id="btn-curfew-turn-off"
-            className={`w-full py-3.5 px-4 rounded-2xl font-medium text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm ${
+            onClick={handleConfirm}
+            id="btn-curfew-confirm-stop-phone"
+            className={`w-full py-3.5 px-4 rounded-2xl font-semibold text-xs flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer shadow-lg hover:scale-[1.01] active:scale-[0.99] ${
               isLight
-                ? 'bg-neutral-900 text-white hover:bg-neutral-800'
+                ? 'bg-amber-500 text-black hover:bg-amber-400'
                 : isEink
                 ? 'bg-neutral-900 text-white font-bold'
-                : 'bg-amber-500 text-black font-semibold hover:bg-amber-400'
+                : 'bg-amber-500 text-black hover:bg-amber-400'
             }`}
           >
-            <Power className="w-4 h-4" />
-            <span>Je pose mon téléphone & j'éteins l'écran</span>
+            <div className="flex items-center gap-2">
+              <Power className="w-4 h-4 shrink-0" />
+              <span className="text-sm font-bold">J'arrête d'utiliser mon téléphone</span>
+            </div>
+            <span className="text-[10px] opacity-80 font-normal">
+              Stoppe immédiatement les notifications pour ce soir
+            </span>
           </button>
 
           <button
@@ -111,7 +129,7 @@ export const CurfewAlertModal: React.FC<CurfewAlertModalProps> = ({
             }`}
           >
             <Clock className="w-3.5 h-3.5" />
-            <span>Rappeler dans 15 minutes</span>
+            <span>Reporter de 15 minutes</span>
           </button>
         </div>
       </div>

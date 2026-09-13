@@ -10,6 +10,8 @@ import {
   ChevronRight,
   Hourglass,
   Lock,
+  Youtube,
+  Play,
 } from 'lucide-react';
 import { AppLauncherItem, ThemeMode } from '../types';
 import { LAUNCHER_APPS } from '../data/apps';
@@ -18,6 +20,7 @@ interface AppGridProps {
   onSelectApp: (app: AppLauncherItem) => void;
   onOpenStreakPage: () => void;
   onOpenFocusSetup: () => void;
+  onOpenMindfulYoutube: () => void;
   theme: ThemeMode;
   currentStreak: number;
 }
@@ -26,6 +29,7 @@ export const AppGrid: React.FC<AppGridProps> = ({
   onSelectApp,
   onOpenStreakPage,
   onOpenFocusSetup,
+  onOpenMindfulYoutube,
   theme,
   currentStreak,
 }) => {
@@ -44,6 +48,8 @@ export const AppGrid: React.FC<AppGridProps> = ({
         return <CalendarIcon className="w-5 h-5" />;
       case 'apple-notes':
         return <PenLine className="w-5 h-5" />;
+      case 'youtube':
+        return <Youtube className="w-5 h-5 text-red-500" />;
       default:
         return <ArrowUpRight className="w-5 h-5" />;
     }
@@ -68,14 +74,26 @@ export const AppGrid: React.FC<AppGridProps> = ({
         </span>
       </div>
 
-      {/* 5 Requested External Apps */}
+      {/* 5 Requested External Apps + YouTube Sobre */}
       {LAUNCHER_APPS.map((app) => (
         <button
           key={app.id}
           id={`btn-app-${app.id}`}
-          onClick={() => onSelectApp(app)}
+          onClick={() => {
+            if (app.id === 'youtube-mindful') {
+              onOpenMindfulYoutube();
+            } else {
+              onSelectApp(app);
+            }
+          }}
           className={`w-full group relative flex items-center justify-between p-3.5 sm:p-4 rounded-xl border text-left transition-all duration-150 active:scale-[0.985] cursor-pointer ${
-            isLight
+            app.id === 'youtube-mindful'
+              ? isLight
+                ? 'bg-red-50/40 border-red-200/80 text-neutral-900 hover:border-red-300 hover:bg-red-50'
+                : isEink
+                ? 'bg-neutral-200 border-neutral-400 text-neutral-950'
+                : 'bg-neutral-900/60 border-neutral-800 hover:border-red-500/40 hover:bg-[#181414]'
+              : isLight
               ? 'bg-white border-neutral-200/90 text-neutral-900 hover:border-neutral-400 hover:bg-neutral-50 shadow-xs'
               : isEink
               ? 'bg-neutral-200 border-neutral-400 text-neutral-950 hover:bg-neutral-300'
@@ -85,7 +103,9 @@ export const AppGrid: React.FC<AppGridProps> = ({
           <div className="flex items-center gap-3.5">
             <div
               className={`p-2 rounded-lg transition-colors ${
-                isLight
+                app.id === 'youtube-mindful'
+                  ? 'bg-red-500/10 text-red-500 group-hover:bg-red-500/20'
+                  : isLight
                   ? 'bg-neutral-100 text-neutral-800 group-hover:bg-neutral-200'
                   : isEink
                   ? 'bg-neutral-300 text-neutral-900'
@@ -98,7 +118,17 @@ export const AppGrid: React.FC<AppGridProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-medium text-base tracking-tight">{app.name}</span>
-                {app.deepLink && (
+                {app.id === 'youtube-mindful' ? (
+                  <span
+                    className={`text-[10px] px-1.5 py-0.5 rounded tracking-wide font-mono font-medium ${
+                      isLight
+                        ? 'bg-red-100 text-red-700'
+                        : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                    }`}
+                  >
+                    Modifié
+                  </span>
+                ) : app.deepLink ? (
                   <span
                     className={`text-[10px] px-1.5 py-0.5 rounded tracking-wide font-mono ${
                       isLight
@@ -108,7 +138,7 @@ export const AppGrid: React.FC<AppGridProps> = ({
                   >
                     App
                   </span>
-                )}
+                ) : null}
               </div>
               <p
                 className={`text-xs mt-0.5 line-clamp-1 ${

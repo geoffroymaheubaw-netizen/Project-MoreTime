@@ -26,25 +26,43 @@ import { SettingsModal } from './components/SettingsModal';
 import { PWAInstallBanner } from './components/PWAInstallBanner';
 import { FocusSetupModal } from './components/FocusSetupModal';
 import { FocusModeScreen } from './components/FocusModeScreen';
+import { MindfulYouTubeScreen } from './components/MindfulYouTubeScreen';
 import { DisconnectReminderModal } from './components/DisconnectReminderModal';
 import { CurfewAlertModal } from './components/CurfewAlertModal';
 import {
   evaluateDisconnectTrigger,
   triggerDisconnectAlert,
   getScheduledTimeForToday,
+  getCurfewCycleKey,
+  getCurfewWindowStatus,
 } from './utils/notifications';
-import { Smartphone, Monitor } from 'lucide-react';
+import { playBedtimeChime, triggerBedtimeHaptic } from './utils/audio';
+import { Smartphone, Monitor, Moon, Power, ShieldCheck } from 'lucide-react';
 
 export default function App() {
   const [stats, setStats] = useState<UserStats>(loadStats);
   const [preferences, setPreferences] = useState<UserPreferences>(loadPreferences);
-  const [currentView, setCurrentView] = useState<'home' | 'streak'>('home');
+  const [currentView, setCurrentView] = useState<'home' | 'streak' | 'mindful-youtube'>('home');
   const [pendingApp, setPendingApp] = useState<AppLauncherItem | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isFocusSetupOpen, setIsFocusSetupOpen] = useState(false);
   const [isDisconnectReminderOpen, setIsDisconnectReminderOpen] = useState(false);
   const [curfewAlertActive, setCurfewAlertActive] = useState(false);
   const [snoozeUntil, setSnoozeUntil] = useState<number | null>(null);
+  const [curfewConfirmedCycle, setCurfewConfirmedCycle] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('minimal_launcher_curfew_confirmed_cycle');
+    } catch {
+      return null;
+    }
+  });
+  const [curfewConfirmedTime, setCurfewConfirmedTime] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('minimal_launcher_curfew_confirmed_time');
+    } catch {
+      return null;
+    }
+  });
   const [lastTriggerMinute, setLastTriggerMinute] = useState<string | null>(() => {
     try {
       return localStorage.getItem('minimal_launcher_last_curfew_trigger');
@@ -87,7 +105,8 @@ export default function App() {
 
       const evaluation = evaluateDisconnectTrigger(
         preferences.disconnectReminder,
-        lastTriggerMinute
+        lastTriggerMinute,
+        curfewConfirmedCycle
       );
 
       if (evaluation.shouldTrigger) {
@@ -98,9 +117,14 @@ export default function App() {
           // ignore
         }
 
+        let alertMessage = preferences.disconnectReminder.customMessage;
+        if (evaluation.reason === 'repeat_interval' && evaluation.minutesElapsed) {
+          alertMessage = `Rappel (+${evaluation.minutesElapsed}m) : Il est l'heure de lâcher votre téléphone. Rendez-vous sur le site et appuyez sur "J'arrête d'utiliser mon téléphone" pour couper les rappels.`;
+        }
+
         // Trigger phone notification, soothing chime and haptics
         triggerDisconnectAlert(
-          preferences.disconnectReminder.customMessage,
+          alertMessage,
           preferences.soundEnabled,
           preferences.hapticsEnabled
         );
@@ -116,10 +140,39 @@ export default function App() {
   }, [
     preferences.disconnectReminder,
     lastTriggerMinute,
+    curfewConfirmedCycle,
     snoozeUntil,
     preferences.soundEnabled,
     preferences.hapticsEnabled,
   ]);
+
+  const handleConfirmStopUsingPhone = () => {
+    const cycleKey = getCurfewCycleKey();
+    const timeNow = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    setCurfewConfirmedCycle(cycleKey);
+    setCurfewConfirmedTime(timeNow);
+    try {
+      localStorage.setItem('minimal_launcher_curfew_confirmed_cycle', cycleKey);
+      localStorage.setItem('minimal_launcher_curfew_confirmed_time', timeNow);
+    } catch {
+      // ignore
+    }
+    setCurfewAlertActive(false);
+    setSnoozeUntil(null);
+    playBedtimeChime(preferences.soundEnabled);
+    triggerBedtimeHaptic(true);
+  };
+
+  const handleCancelCurfewConfirmation = () => {
+    setCurfewConfirmedCycle(null);
+    setCurfewConfirmedTime(null);
+    try {
+      localStorage.removeItem('minimal_launcher_curfew_confirmed_cycle');
+      localStorage.removeItem('minimal_launcher_curfew_confirmed_time');
+    } catch {
+      // ignore
+    }
+  };
 
   const handleSnoozeCurfew = (minutes = 15) => {
     setSnoozeUntil(Date.now() + minutes * 60 * 1000);
@@ -131,6 +184,10 @@ export default function App() {
     savePreferences(newPrefs);
   };
 
+  const curfewStatus = getCurfewWindowStatus(preferences.disconnectReminder);
+  const isCurfewWindowActive = curfewStatus.isWindowActive;
+  const isCurfewConfirmedForNight = curfewConfirmedCycle === curfewStatus.cycleKey;
+
   const handleResetData = () => {
     localStorage.removeItem('minimal_launcher_stats_v1');
     const fresh = loadStats();
@@ -141,6 +198,11 @@ export default function App() {
   const handleSelectApp = (app: AppLauncherItem) => {
     playMinimalClick(preferences.soundEnabled);
     triggerHaptic(preferences.hapticsEnabled);
+
+    if (app.id === 'youtube-mindful') {
+      setCurrentView('mindful-youtube');
+      return;
+    }
 
     if (preferences.intentionalPause) {
       setPendingApp(app);
@@ -272,6 +334,100 @@ export default function App() {
             />
           ) : currentView === 'home' ? (
             <div className="flex-1 flex flex-col justify-between">
+              {/* TOP OF HOME SCREEN: Direct button to stop using phone & cut off notifications */}
+              <div className="w-full pt-1 pb-2 shrink-0 animate-in fade-in duration-200" id="section-top-phone-stop">
+                {!isCurfewConfirmedForNight ? (
+                  <button
+                    onClick={handleConfirmStopUsingPhone}
+                    id="btn-top-stop-phone-home"
+                    className={`w-full p-3 rounded-2xl border flex items-center justify-between text-left transition-all cursor-pointer shadow-md active:scale-[0.99] ${
+                      isCurfewWindowActive
+                        ? 'bg-amber-500 border-amber-400 text-black shadow-amber-500/20'
+                        : preferences.theme === 'light'
+                        ? 'bg-amber-50/90 border-amber-300 text-amber-950 hover:bg-amber-100'
+                        : preferences.theme === 'eink'
+                        ? 'bg-[#dedcd4] border-neutral-900 text-neutral-950 font-bold'
+                        : 'bg-amber-500/15 border-amber-500/35 text-amber-200 hover:bg-amber-500/20'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div
+                        className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
+                          isCurfewWindowActive
+                            ? 'bg-black text-amber-400'
+                            : preferences.theme === 'light'
+                            ? 'bg-amber-200 text-amber-900'
+                            : 'bg-amber-500/25 text-amber-300'
+                        }`}
+                      >
+                        <Power className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="text-xs sm:text-sm font-bold block leading-tight">
+                          J'arrête d'utiliser mon téléphone
+                        </span>
+                        <span
+                          className={`text-[10px] sm:text-[11px] block mt-0.5 ${
+                            isCurfewWindowActive
+                              ? 'text-black/85 font-medium'
+                              : preferences.theme === 'light'
+                              ? 'text-amber-800'
+                              : 'text-amber-300/80'
+                          }`}
+                        >
+                          {isCurfewWindowActive
+                            ? `Couvre-feu en cours (${curfewStatus.targetTimeStr}) • Stoppe les rappels`
+                            : preferences.disconnectReminder.enabled
+                            ? `Rappel prévu à ${curfewStatus.targetTimeStr} • Poser et couper les rappels`
+                            : 'Coupe les notifications pour ce soir'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="shrink-0 ml-2">
+                      <span
+                        className={`px-2.5 py-1 rounded-xl text-[11px] font-bold ${
+                          isCurfewWindowActive
+                            ? 'bg-black text-amber-400'
+                            : 'bg-amber-500 text-black'
+                        }`}
+                      >
+                        Arrêter
+                      </span>
+                    </div>
+                  </button>
+                ) : (
+                  <div
+                    className={`w-full py-2 px-3.5 rounded-2xl border flex items-center justify-between text-xs transition-colors shadow-sm ${
+                      preferences.theme === 'light'
+                        ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+                        : preferences.theme === 'eink'
+                        ? 'bg-[#dedcd4] border-neutral-900 text-neutral-950'
+                        : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 text-left">
+                      <div className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                      </div>
+                      <div>
+                        <span className="font-semibold block text-xs">Téléphone posé pour ce soir</span>
+                        <span className="text-[10px] opacity-80">
+                          {curfewConfirmedTime ? `Validé à ${curfewConfirmedTime} • ` : ''}Notifications coupées jusqu'à demain.
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleCancelCurfewConfirmation}
+                      className="text-[10px] font-medium opacity-70 hover:opacity-100 hover:text-amber-400 underline cursor-pointer shrink-0 ml-2 py-1 px-1.5"
+                      title="Réactiver si vous devez continuer à utiliser le téléphone"
+                    >
+                      Réactiver
+                    </button>
+                  </div>
+                )}
+              </div>
+
               {/* Header with Digital Clock & Mindful quote */}
               <ClockHeader
                 currentStreak={stats.currentStreak}
@@ -287,9 +443,10 @@ export default function App() {
                 }}
                 disconnectReminder={preferences.disconnectReminder}
                 theme={preferences.theme}
+                isCurfewConfirmed={isCurfewConfirmedForNight}
               />
 
-              {/* Central App Launcher Grid (The 5 requested apps + Focus button + Streak button) */}
+              {/* Central App Launcher Grid (The apps + YouTube Sobre + Focus button + Streak button) */}
               <AppGrid
                 onSelectApp={handleSelectApp}
                 onOpenStreakPage={() => {
@@ -299,6 +456,10 @@ export default function App() {
                 onOpenFocusSetup={() => {
                   playMinimalClick(preferences.soundEnabled);
                   setIsFocusSetupOpen(true);
+                }}
+                onOpenMindfulYoutube={() => {
+                  playMinimalClick(preferences.soundEnabled);
+                  setCurrentView('mindful-youtube');
                 }}
                 theme={preferences.theme}
                 currentStreak={stats.currentStreak}
@@ -312,6 +473,16 @@ export default function App() {
                 </div>
               </footer>
             </div>
+          ) : currentView === 'mindful-youtube' ? (
+            /* Modified Distraction-Free Real YouTube Player & Search */
+            <MindfulYouTubeScreen
+              onBack={() => {
+                playMinimalClick(preferences.soundEnabled);
+                setCurrentView('home');
+              }}
+              theme={preferences.theme}
+              soundEnabled={preferences.soundEnabled}
+            />
           ) : (
             /* Dedicated Screen Time Reduction Streak & Days Page */
             <StreakPage
@@ -369,6 +540,7 @@ export default function App() {
           isOpen={curfewAlertActive}
           timeStr={getScheduledTimeForToday(preferences.disconnectReminder).time}
           message={preferences.disconnectReminder.customMessage}
+          onConfirmStop={handleConfirmStopUsingPhone}
           onDismiss={() => setCurfewAlertActive(false)}
           onSnooze={handleSnoozeCurfew}
           theme={preferences.theme}

@@ -51,6 +51,15 @@ export const LAUNCHER_APPS: AppLauncherItem[] = [
     description: 'Application Notes iOS (ou version iCloud)',
     intentPrompt: 'Notez votre pensée puis revenez au monde réel.',
   },
+  {
+    id: 'youtube-mindful',
+    name: 'YouTube Sobre',
+    category: 'Vidéo & Savoirs',
+    url: '#internal-mindful-youtube',
+    iconName: 'youtube',
+    description: 'Visionnage 100% dans le site, sans algorithmes ni redirection',
+    intentPrompt: 'Que souhaitez-vous visionner ou apprendre de précis ?',
+  },
 ];
 
 export const MINDFUL_QUOTES = [

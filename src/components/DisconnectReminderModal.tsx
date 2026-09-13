@@ -779,22 +779,28 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
           </div>
         </div>
 
-        {/* Repetition options */}
+        {/* Repetition options until confirmed on site */}
         <div className="flex flex-col gap-1.5 pt-1">
-          <label className="text-xs font-semibold uppercase tracking-wider text-neutral-400 block">
-            Répétition si l'écran reste allumé
-          </label>
-          <div className="grid grid-cols-3 gap-1.5 text-xs">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-semibold uppercase tracking-wider text-neutral-400 block">
+              Fréquence des rappels (jusqu'à validation)
+            </label>
+            <span className="text-[10px] text-amber-500 font-mono">
+              {localSettings.repeatIntervalMinutes ? `${localSettings.repeatIntervalMinutes} min` : '10 min'}
+            </span>
+          </div>
+          <div className="grid grid-cols-4 gap-1 text-xs">
             {[
-              { val: 0, label: 'Une fois' },
-              { val: 15, label: 'Toutes les 15m' },
-              { val: 30, label: 'Toutes les 30m' },
+              { val: 5, label: '5 min' },
+              { val: 10, label: '10 min' },
+              { val: 15, label: '15 min' },
+              { val: 30, label: '30 min' },
             ].map((item) => (
               <button
                 key={item.val}
                 onClick={() => handleRepeatChange(item.val)}
                 className={`py-1.5 px-2 rounded-xl border text-center transition-all cursor-pointer ${
-                  localSettings.repeatIntervalMinutes === item.val
+                  (localSettings.repeatIntervalMinutes || 10) === item.val
                     ? 'border-amber-500 bg-amber-500/10 text-amber-400 font-medium'
                     : isLight
                     ? 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
@@ -804,6 +810,24 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
                 {item.label}
               </button>
             ))}
+          </div>
+
+          {/* Explanation badge about stop confirmation button */}
+          <div
+            className={`mt-1.5 p-2.5 rounded-xl border text-[11px] leading-relaxed flex items-start gap-2 ${
+              isLight
+                ? 'bg-amber-50/70 border-amber-200 text-amber-950'
+                : isEink
+                ? 'bg-[#e5e3db] border-neutral-800 text-neutral-900'
+                : 'bg-amber-500/10 border-amber-500/25 text-amber-300'
+            }`}
+          >
+            <span className="shrink-0 text-base leading-none">📱</span>
+            <div>
+              <strong className="font-semibold block text-white">Arrêt uniquement sur confirmation</strong>
+              Le site continuera d'envoyer des rappels tant que vous n'aurez pas ouvert le launcher et appuyé sur le bouton{' '}
+              <span className="font-semibold text-amber-400">« J'arrête d'utiliser mon téléphone »</span>.
+            </div>
           </div>
         </div>
 

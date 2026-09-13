@@ -6,7 +6,7 @@ export interface AppLauncherItem {
   category: string;
   url: string;
   deepLink?: string;
-  iconName: 'notebook' | 'claude' | 'chatgpt' | 'calendar' | 'apple-notes' | 'stats';
+  iconName: 'notebook' | 'claude' | 'chatgpt' | 'calendar' | 'apple-notes' | 'stats' | 'youtube';
   description: string;
   intentPrompt?: string;
 }

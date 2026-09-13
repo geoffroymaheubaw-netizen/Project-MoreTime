@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Sparkles, Settings as SettingsIcon, Flame, Moon } from 'lucide-react';
+import { Sparkles, Settings as SettingsIcon, Flame, Moon, Check } from 'lucide-react';
 import { MINDFUL_QUOTES } from '../data/apps';
 import { ThemeMode, DisconnectReminderSettings } from '../types';
 import { getScheduledTimeForToday } from '../utils/notifications';
@@ -12,6 +12,7 @@ interface ClockHeaderProps {
   onOpenDisconnectReminder: () => void;
   disconnectReminder: DisconnectReminderSettings;
   theme: ThemeMode;
+  isCurfewConfirmed?: boolean;
 }
 
 export const ClockHeader: React.FC<ClockHeaderProps> = ({
@@ -22,6 +23,7 @@ export const ClockHeader: React.FC<ClockHeaderProps> = ({
   onOpenDisconnectReminder,
   disconnectReminder,
   theme,
+  isCurfewConfirmed = false,
 }) => {
   const [time, setTime] = useState({ hours: '12', minutes: '00', seconds: '00' });
   const [dateStr, setDateStr] = useState('');
@@ -83,7 +85,9 @@ export const ClockHeader: React.FC<ClockHeaderProps> = ({
             onClick={onOpenDisconnectReminder}
             id="btn-quick-disconnect-reminder"
             className={`flex items-center gap-1 px-2.5 py-1 rounded-full border text-[11px] transition-all cursor-pointer ${
-              disconnectReminder.enabled && todaySchedule.enabled
+              isCurfewConfirmed
+                ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400 font-medium'
+                : disconnectReminder.enabled && todaySchedule.enabled
                 ? isLight
                   ? 'bg-amber-50 border-amber-300 text-amber-900 font-medium'
                   : 'bg-amber-500/10 border-amber-500/30 text-amber-400 font-medium'
@@ -92,22 +96,30 @@ export const ClockHeader: React.FC<ClockHeaderProps> = ({
                 : 'border-neutral-800 text-neutral-500 hover:text-neutral-400'
             }`}
             title={
-              disconnectReminder.enabled
+              isCurfewConfirmed
+                ? 'Couvre-feu validé : téléphone posé pour ce soir (notifications coupées)'
+                : disconnectReminder.enabled
                 ? todaySchedule.enabled
                   ? `Rappels de déconnexion : prévu aujourd'hui à ${todaySchedule.time}`
                   : 'Rappels de déconnexion : en pause aujourd’hui'
                 : 'Configurer les rappels de déconnexion'
             }
           >
-            <Moon
-              className={`w-3 h-3 ${
-                disconnectReminder.enabled && todaySchedule.enabled
-                  ? 'text-amber-500 fill-amber-500/20'
-                  : 'text-neutral-500'
-              }`}
-            />
+            {isCurfewConfirmed ? (
+              <Check className="w-3 h-3 text-emerald-400" />
+            ) : (
+              <Moon
+                className={`w-3 h-3 ${
+                  disconnectReminder.enabled && todaySchedule.enabled
+                    ? 'text-amber-500 fill-amber-500/20'
+                    : 'text-neutral-500'
+                }`}
+              />
+            )}
             <span>
-              {disconnectReminder.enabled
+              {isCurfewConfirmed
+                ? 'Posé ✓'
+                : disconnectReminder.enabled
                 ? todaySchedule.enabled
                   ? todaySchedule.time
                   : 'En pause'

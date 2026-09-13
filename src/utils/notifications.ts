@@ -172,12 +172,85 @@ export function getScheduledTimeForToday(
 }
 
 /**
- * Evaluates whether the disconnect reminder should trigger at this moment
+ * Computes the unique date key for the evening/night curfew cycle (YYYY-MM-DD).
+ * Any time between 00:00 and 04:59 AM belongs to the cycle started the previous evening.
+ */
+export function getCurfewCycleKey(date: Date = new Date()): string {
+  const d = new Date(date);
+  if (d.getHours() < 5) {
+    d.setDate(d.getDate() - 1);
+  }
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Checks whether the current time falls into the active evening curfew window.
+ */
+export function getCurfewWindowStatus(
+  settings: DisconnectReminderSettings,
+  now: Date = new Date()
+): {
+  isWindowActive: boolean;
+  cycleKey: string;
+  targetTimeStr: string;
+  minutesElapsed: number;
+} {
+  const cycleKey = getCurfewCycleKey(now);
+  if (!settings.enabled) {
+    return { isWindowActive: false, cycleKey, targetTimeStr: '21:30', minutesElapsed: 0 };
+  }
+
+  // Day of week when the cycle started
+  const cycleDate = new Date(now);
+  if (now.getHours() < 5) {
+    cycleDate.setDate(cycleDate.getDate() - 1);
+  }
+  const cycleDayIndex = cycleDate.getDay();
+  const schedule = getScheduledTimeForDay(settings, cycleDayIndex);
+
+  if (!schedule.enabled) {
+    return { isWindowActive: false, cycleKey, targetTimeStr: schedule.time, minutesElapsed: 0 };
+  }
+
+  const [targetH, targetM] = schedule.time.split(':').map(Number);
+  const curfewDate = new Date(cycleDate);
+  curfewDate.setHours(targetH, targetM, 0, 0);
+
+  const diffMs = now.getTime() - curfewDate.getTime();
+  const minutesElapsed = Math.floor(diffMs / 60000);
+
+  // Active from scheduled time until 05:00 AM next morning (max 8 hours)
+  const isAfterCurfew = now.getTime() >= curfewDate.getTime();
+  const isBeforeMorning = now.getHours() >= targetH || now.getHours() < 5;
+  const isWindowActive = isAfterCurfew && isBeforeMorning && minutesElapsed >= 0 && minutesElapsed <= 480;
+
+  return {
+    isWindowActive,
+    cycleKey,
+    targetTimeStr: schedule.time,
+    minutesElapsed,
+  };
+}
+
+/**
+ * Evaluates whether the disconnect reminder should trigger at this moment.
+ * Keeps repeating until the user goes to the site and confirms they stopped using the phone!
  */
 export function evaluateDisconnectTrigger(
   settings: DisconnectReminderSettings,
-  lastTriggerKey: string | null
-): { shouldTrigger: boolean; minuteKey: string; reason?: string; scheduledTime?: string } {
+  lastTriggerKey: string | null,
+  confirmedCycleKey: string | null
+): {
+  shouldTrigger: boolean;
+  minuteKey: string;
+  reason?: string;
+  scheduledTime?: string;
+  minutesElapsed?: number;
+  isConfirmedForNight?: boolean;
+} {
   const now = new Date();
   const currentHH = String(now.getHours()).padStart(2, '0');
   const currentMM = String(now.getMinutes()).padStart(2, '0');
@@ -188,11 +261,21 @@ export function evaluateDisconnectTrigger(
     return { shouldTrigger: false, minuteKey };
   }
 
-  const todaySchedule = getScheduledTimeForToday(settings);
+  const windowStatus = getCurfewWindowStatus(settings, now);
 
-  // Check if today is active
-  if (!todaySchedule.enabled) {
+  if (!windowStatus.isWindowActive) {
     return { shouldTrigger: false, minuteKey };
+  }
+
+  // IF THE USER ALREADY PRESSED THE BUTTON ON THE SITE TO CONFIRM PHONE SHUTDOWN:
+  // STOP SENDING ALL NOTIFICATIONS FOR THIS NIGHT!
+  if (confirmedCycleKey === windowStatus.cycleKey) {
+    return {
+      shouldTrigger: false,
+      minuteKey,
+      isConfirmedForNight: true,
+      scheduledTime: windowStatus.targetTimeStr,
+    };
   }
 
   // Already triggered in this exact minute
@@ -200,23 +283,32 @@ export function evaluateDisconnectTrigger(
     return { shouldTrigger: false, minuteKey };
   }
 
-  const [targetH, targetM] = todaySchedule.time.split(':').map(Number);
-  const targetMinutes = targetH * 60 + targetM;
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  // Determine repeat interval in minutes (defaults to 10 minutes if 0, so reminders don't stop until confirmed)
+  const interval =
+    settings.repeatIntervalMinutes && settings.repeatIntervalMinutes > 0
+      ? settings.repeatIntervalMinutes
+      : 10;
 
-  // Exactly at scheduled time
-  if (currentMinutes === targetMinutes) {
-    return { shouldTrigger: true, minuteKey, reason: 'exact_time', scheduledTime: todaySchedule.time };
+  // Exact curfew start minute
+  if (windowStatus.minutesElapsed === 0) {
+    return {
+      shouldTrigger: true,
+      minuteKey,
+      reason: 'exact_time',
+      scheduledTime: windowStatus.targetTimeStr,
+      minutesElapsed: 0,
+    };
   }
 
-  // If repeating interval is set (e.g. 15, 30, 60 minutes) and current time is past the curfew (within a 3.5-hour evening window)
-  if (settings.repeatIntervalMinutes && settings.repeatIntervalMinutes > 0) {
-    const elapsedMinutes = currentMinutes - targetMinutes;
-    if (elapsedMinutes > 0 && elapsedMinutes <= 210) {
-      if (elapsedMinutes % settings.repeatIntervalMinutes === 0) {
-        return { shouldTrigger: true, minuteKey, reason: 'repeat_interval', scheduledTime: todaySchedule.time };
-      }
-    }
+  // Periodic reminder until user goes on the site and presses the confirmation button
+  if (windowStatus.minutesElapsed > 0 && windowStatus.minutesElapsed % interval === 0) {
+    return {
+      shouldTrigger: true,
+      minuteKey,
+      reason: 'repeat_interval',
+      scheduledTime: windowStatus.targetTimeStr,
+      minutesElapsed: windowStatus.minutesElapsed,
+    };
   }
 
   return { shouldTrigger: false, minuteKey };
