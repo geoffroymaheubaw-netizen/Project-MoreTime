@@ -15,7 +15,7 @@ export const LAUNCHER_APPS: AppLauncherItem[] = [
     name: 'Claude AI',
     category: 'Intelligence Artificielle',
     url: 'https://claude.ai/',
-    deepLink: 'claude://',
+    deepLink: 'claude://claude.ai/new',
     iconName: 'claude',
     description: 'Assistant de réflexion, rédaction et analyse',
     intentPrompt: 'Avez-vous une question précise à formuler ?',

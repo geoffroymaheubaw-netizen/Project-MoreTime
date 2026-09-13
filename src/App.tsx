@@ -17,7 +17,7 @@ import {
   recordCompletedFocusSession,
 } from './utils/storage';
 import { playMinimalClick, triggerHaptic } from './utils/audio';
-import { launchAppUrl } from './utils/launcher';
+import { launchAppUrl, getPrimaryDeepLink } from './utils/launcher';
 import { ClockHeader } from './components/ClockHeader';
 import { AppGrid } from './components/AppGrid';
 import { StreakPage } from './components/StreakPage';
@@ -75,8 +75,8 @@ export default function App() {
     if (preferences.intentionalPause) {
       setPendingApp(app);
     } else {
-      // Directly launch with priority to deep link
-      const urlToOpen = app.deepLink || app.url;
+      // Directly launch with priority to device-specific deep link
+      const urlToOpen = getPrimaryDeepLink(app) || app.deepLink || app.url;
       launchAppUrl(urlToOpen, app.url);
     }
   };

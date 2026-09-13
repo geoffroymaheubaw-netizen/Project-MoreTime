@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { ExternalLink, X, Wind, Check, Smartphone, Globe } from 'lucide-react';
+import { ExternalLink, X, Wind, Check, Smartphone, Globe, RefreshCw } from 'lucide-react';
 import { AppLauncherItem, ThemeMode } from '../types';
 import { playMinimalClick } from '../utils/audio';
+import { getPrimaryDeepLink, getAlternativeDeepLink } from '../utils/launcher';
 
 interface MindfulModalProps {
   app: AppLauncherItem | null;
@@ -45,9 +46,12 @@ export const MindfulModal: React.FC<MindfulModalProps> = ({
   const isLight = theme === 'light';
   const isEink = theme === 'eink';
 
-  const handleOpenTarget = (useDeepLink: boolean) => {
+  const primaryDeepLink = getPrimaryDeepLink(app);
+  const alternativeDeepLink = getAlternativeDeepLink(app);
+
+  const handleOpenTarget = (deepLinkUrl?: string) => {
     playMinimalClick(soundEnabled);
-    const targetUrl = useDeepLink && app.deepLink ? app.deepLink : app.url;
+    const targetUrl = deepLinkUrl || app.url;
     onLaunch(targetUrl, app.url);
   };
 
@@ -128,11 +132,11 @@ export const MindfulModal: React.FC<MindfulModalProps> = ({
 
         {/* Action Buttons */}
         <div className="w-full flex flex-col gap-2">
-          {/* If app has deepLink (like chatgpt://, claude://, mobilenotes:// or calshow:), offer direct app open */}
-          {app.deepLink ? (
+          {/* If app has deepLink (like chatgpt, claude, mobilenotes or calshow), offer direct app open */}
+          {primaryDeepLink ? (
             <>
               <button
-                onClick={() => handleOpenTarget(true)}
+                onClick={() => handleOpenTarget(primaryDeepLink)}
                 id="btn-launch-deep-link"
                 className={`w-full py-3 px-4 rounded-xl font-medium text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm ${
                   isLight
@@ -146,8 +150,23 @@ export const MindfulModal: React.FC<MindfulModalProps> = ({
                 <span>Ouvrir l'application mobile ({app.name})</span>
               </button>
 
+              {alternativeDeepLink && (
+                <button
+                  onClick={() => handleOpenTarget(alternativeDeepLink)}
+                  id="btn-launch-alt-deep-link"
+                  className={`w-full py-1.5 px-3 rounded-lg text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    isLight
+                      ? 'text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100'
+                      : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
+                  }`}
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>Essayer le lien direct alternatif</span>
+                </button>
+              )}
+
               <button
-                onClick={() => handleOpenTarget(false)}
+                onClick={() => handleOpenTarget(undefined)}
                 id="btn-launch-web-link"
                 className={`w-full py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
                   isLight
@@ -163,7 +182,7 @@ export const MindfulModal: React.FC<MindfulModalProps> = ({
             </>
           ) : (
             <button
-              onClick={() => handleOpenTarget(false)}
+              onClick={() => handleOpenTarget(undefined)}
               id="btn-launch-web-link"
               className={`w-full py-3 px-4 rounded-xl font-medium text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
                 isLight
