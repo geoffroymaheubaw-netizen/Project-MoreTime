@@ -26,6 +26,13 @@ import { SettingsModal } from './components/SettingsModal';
 import { PWAInstallBanner } from './components/PWAInstallBanner';
 import { FocusSetupModal } from './components/FocusSetupModal';
 import { FocusModeScreen } from './components/FocusModeScreen';
+import { DisconnectReminderModal } from './components/DisconnectReminderModal';
+import { CurfewAlertModal } from './components/CurfewAlertModal';
+import {
+  evaluateDisconnectTrigger,
+  triggerDisconnectAlert,
+  getScheduledTimeForToday,
+} from './utils/notifications';
 import { Smartphone, Monitor } from 'lucide-react';
 
 export default function App() {
@@ -35,6 +42,16 @@ export default function App() {
   const [pendingApp, setPendingApp] = useState<AppLauncherItem | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isFocusSetupOpen, setIsFocusSetupOpen] = useState(false);
+  const [isDisconnectReminderOpen, setIsDisconnectReminderOpen] = useState(false);
+  const [curfewAlertActive, setCurfewAlertActive] = useState(false);
+  const [snoozeUntil, setSnoozeUntil] = useState<number | null>(null);
+  const [lastTriggerMinute, setLastTriggerMinute] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('minimal_launcher_last_curfew_trigger');
+    } catch {
+      return null;
+    }
+  });
   const [activeFocusSession, setActiveFocusSession] = useState<FocusSession | null>(loadFocusSession);
   const [desktopPhoneFrame, setDesktopPhoneFrame] = useState(true);
 
@@ -55,6 +72,59 @@ export default function App() {
       body.className = 'h-full bg-[#0a0a0a] text-[#ededed] antialiased select-none';
     }
   }, [preferences.theme]);
+
+  // Periodic checker for the user's disconnect curfew
+  useEffect(() => {
+    const checkCurfew = () => {
+      if (!preferences.disconnectReminder || !preferences.disconnectReminder.enabled) {
+        return;
+      }
+
+      // If snoozed and snooze time hasn't passed, do not trigger yet
+      if (snoozeUntil && Date.now() < snoozeUntil) {
+        return;
+      }
+
+      const evaluation = evaluateDisconnectTrigger(
+        preferences.disconnectReminder,
+        lastTriggerMinute
+      );
+
+      if (evaluation.shouldTrigger) {
+        setLastTriggerMinute(evaluation.minuteKey);
+        try {
+          localStorage.setItem('minimal_launcher_last_curfew_trigger', evaluation.minuteKey);
+        } catch {
+          // ignore
+        }
+
+        // Trigger phone notification, soothing chime and haptics
+        triggerDisconnectAlert(
+          preferences.disconnectReminder.customMessage,
+          preferences.soundEnabled,
+          preferences.hapticsEnabled
+        );
+
+        // Also display in-app curfew alert screen
+        setCurfewAlertActive(true);
+      }
+    };
+
+    checkCurfew();
+    const interval = setInterval(checkCurfew, 20000); // checks every 20s
+    return () => clearInterval(interval);
+  }, [
+    preferences.disconnectReminder,
+    lastTriggerMinute,
+    snoozeUntil,
+    preferences.soundEnabled,
+    preferences.hapticsEnabled,
+  ]);
+
+  const handleSnoozeCurfew = (minutes = 15) => {
+    setSnoozeUntil(Date.now() + minutes * 60 * 1000);
+    setCurfewAlertActive(false);
+  };
 
   const handleUpdatePreferences = (newPrefs: UserPreferences) => {
     setPreferences(newPrefs);
@@ -77,13 +147,15 @@ export default function App() {
     } else {
       // Directly launch with priority to device-specific deep link
       const urlToOpen = getPrimaryDeepLink(app) || app.deepLink || app.url;
-      launchAppUrl(urlToOpen, app.url);
+      const isAppTarget = Boolean(app.deepLink && urlToOpen !== app.url);
+      launchAppUrl(urlToOpen, app.url, isAppTarget);
     }
   };
 
   const handleDirectLaunch = (url: string, fallbackUrl?: string) => {
+    const isAppTarget = Boolean(pendingApp?.deepLink && url !== pendingApp.url);
     setPendingApp(null);
-    launchAppUrl(url, fallbackUrl);
+    launchAppUrl(url, fallbackUrl, isAppTarget);
   };
 
   const handleToggleDay = (screenHours?: number, reflection?: string) => {
@@ -209,6 +281,11 @@ export default function App() {
                   playMinimalClick(preferences.soundEnabled);
                   setCurrentView('streak');
                 }}
+                onOpenDisconnectReminder={() => {
+                  playMinimalClick(preferences.soundEnabled);
+                  setIsDisconnectReminderOpen(true);
+                }}
+                disconnectReminder={preferences.disconnectReminder}
                 theme={preferences.theme}
               />
 
@@ -272,6 +349,30 @@ export default function App() {
           prefs={preferences}
           onUpdatePrefs={handleUpdatePreferences}
           onResetData={handleResetData}
+          onOpenDisconnectReminder={() => setIsDisconnectReminderOpen(true)}
+        />
+
+        {/* Disconnect & Curfew Reminder Settings Modal */}
+        <DisconnectReminderModal
+          isOpen={isDisconnectReminderOpen}
+          onClose={() => setIsDisconnectReminderOpen(false)}
+          settings={preferences.disconnectReminder}
+          onSave={(newSettings) =>
+            handleUpdatePreferences({ ...preferences, disconnectReminder: newSettings })
+          }
+          theme={preferences.theme}
+          soundEnabled={preferences.soundEnabled}
+        />
+
+        {/* Live Curfew Evening Alert Modal */}
+        <CurfewAlertModal
+          isOpen={curfewAlertActive}
+          timeStr={getScheduledTimeForToday(preferences.disconnectReminder).time}
+          message={preferences.disconnectReminder.customMessage}
+          onDismiss={() => setCurfewAlertActive(false)}
+          onSnooze={handleSnoozeCurfew}
+          theme={preferences.theme}
+          soundEnabled={preferences.soundEnabled}
         />
       </div>
     </main>

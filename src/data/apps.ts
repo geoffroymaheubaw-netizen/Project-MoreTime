@@ -6,6 +6,7 @@ export const LAUNCHER_APPS: AppLauncherItem[] = [
     name: 'Google NotebookLM',
     category: 'Recherche & Synthèse',
     url: 'https://notebooklm.google.com/',
+    deepLink: 'intent://notebooklm.google.com/#Intent;scheme=https;package=com.google.android.apps.labs.language.tailwind;S.browser_fallback_url=https%3A%2F%2Fnotebooklm.google.com;end',
     iconName: 'notebook',
     description: 'Carnet de notes intelligent & analyse de documents',
     intentPrompt: 'Quel document ou sujet souhaitez-vous étudier ?',

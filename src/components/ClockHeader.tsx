@@ -1,13 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { Sparkles, Settings as SettingsIcon, Flame } from 'lucide-react';
+import { Sparkles, Settings as SettingsIcon, Flame, Moon } from 'lucide-react';
 import { MINDFUL_QUOTES } from '../data/apps';
-import { ThemeMode } from '../types';
+import { ThemeMode, DisconnectReminderSettings } from '../types';
+import { getScheduledTimeForToday } from '../utils/notifications';
 
 interface ClockHeaderProps {
   currentStreak: number;
   totalDays: number;
   onOpenSettings: () => void;
   onOpenStreak: () => void;
+  onOpenDisconnectReminder: () => void;
+  disconnectReminder: DisconnectReminderSettings;
   theme: ThemeMode;
 }
 
@@ -16,6 +19,8 @@ export const ClockHeader: React.FC<ClockHeaderProps> = ({
   totalDays,
   onOpenSettings,
   onOpenStreak,
+  onOpenDisconnectReminder,
+  disconnectReminder,
   theme,
 }) => {
   const [time, setTime] = useState({ hours: '12', minutes: '00', seconds: '00' });
@@ -51,6 +56,7 @@ export const ClockHeader: React.FC<ClockHeaderProps> = ({
 
   const isEink = theme === 'eink';
   const isLight = theme === 'light';
+  const todaySchedule = getScheduledTimeForToday(disconnectReminder);
 
   return (
     <header className="w-full pt-4 pb-6 px-1 flex flex-col items-center select-none" id="header-clock">
@@ -72,7 +78,43 @@ export const ClockHeader: React.FC<ClockHeaderProps> = ({
           <span className="font-medium">{currentStreak} {currentStreak > 1 ? 'jours' : 'jour'} de sobriété</span>
         </button>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={onOpenDisconnectReminder}
+            id="btn-quick-disconnect-reminder"
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-full border text-[11px] transition-all cursor-pointer ${
+              disconnectReminder.enabled && todaySchedule.enabled
+                ? isLight
+                  ? 'bg-amber-50 border-amber-300 text-amber-900 font-medium'
+                  : 'bg-amber-500/10 border-amber-500/30 text-amber-400 font-medium'
+                : isLight
+                ? 'border-neutral-300 text-neutral-500 hover:text-neutral-700'
+                : 'border-neutral-800 text-neutral-500 hover:text-neutral-400'
+            }`}
+            title={
+              disconnectReminder.enabled
+                ? todaySchedule.enabled
+                  ? `Rappels de déconnexion : prévu aujourd'hui à ${todaySchedule.time}`
+                  : 'Rappels de déconnexion : en pause aujourd’hui'
+                : 'Configurer les rappels de déconnexion'
+            }
+          >
+            <Moon
+              className={`w-3 h-3 ${
+                disconnectReminder.enabled && todaySchedule.enabled
+                  ? 'text-amber-500 fill-amber-500/20'
+                  : 'text-neutral-500'
+              }`}
+            />
+            <span>
+              {disconnectReminder.enabled
+                ? todaySchedule.enabled
+                  ? todaySchedule.time
+                  : 'En pause'
+                : 'Déconnexion'}
+            </span>
+          </button>
+
           <button
             onClick={onOpenSettings}
             id="btn-settings"

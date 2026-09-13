@@ -35,6 +35,27 @@ export function getDefaultPreferences(): UserPreferences {
     hapticsEnabled: true,
     quoteOfDay: true,
     targetDailyScreenTimeHours: 2,
+    disconnectReminder: {
+      enabled: true,
+      time: '21:30',
+      days: [1, 2, 3, 4, 5, 6, 0], // Every day by default (Lun à Dim)
+      scheduleMode: 'weekdays_weekend',
+      weekdayTime: '21:30',
+      weekendTime: '23:00',
+      dayTimes: {
+        1: { enabled: true, time: '21:30' }, // Lundi
+        2: { enabled: true, time: '21:30' }, // Mardi
+        3: { enabled: true, time: '21:30' }, // Mercredi
+        4: { enabled: true, time: '21:30' }, // Jeudi
+        5: { enabled: true, time: '22:30' }, // Vendredi (un peu plus tard)
+        6: { enabled: true, time: '23:00' }, // Samedi
+        0: { enabled: true, time: '22:00' }, // Dimanche
+      },
+      repeatIntervalMinutes: 30,
+      customMessage: "Il est l'heure de lâcher votre téléphone. Offrez à vos yeux et votre esprit un repos bien mérité.",
+      soundAlert: true,
+      vibrateAlert: true,
+    },
   };
 }
 
@@ -42,7 +63,16 @@ export function loadPreferences(): UserPreferences {
   try {
     const saved = localStorage.getItem(PREFS_KEY);
     if (saved) {
-      return { ...getDefaultPreferences(), ...JSON.parse(saved) };
+      const parsed = JSON.parse(saved);
+      const defaults = getDefaultPreferences();
+      return {
+        ...defaults,
+        ...parsed,
+        disconnectReminder: {
+          ...defaults.disconnectReminder,
+          ...(parsed.disconnectReminder || {}),
+        },
+      };
     }
   } catch (e) {
     console.error('Failed to load preferences', e);

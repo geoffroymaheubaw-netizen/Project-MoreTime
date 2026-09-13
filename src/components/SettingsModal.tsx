@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Moon, Sun, Volume2, VolumeX, Shield, Smartphone, RotateCcw } from 'lucide-react';
+import { X, Moon, Sun, Volume2, VolumeX, Shield, Smartphone, RotateCcw, Bell } from 'lucide-react';
 import { UserPreferences, ThemeMode } from '../types';
 import { playMinimalClick } from '../utils/audio';
 
@@ -9,6 +9,7 @@ interface SettingsModalProps {
   prefs: UserPreferences;
   onUpdatePrefs: (newPrefs: UserPreferences) => void;
   onResetData: () => void;
+  onOpenDisconnectReminder: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -17,6 +18,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   prefs,
   onUpdatePrefs,
   onResetData,
+  onOpenDisconnectReminder,
 }) => {
   if (!isOpen) return null;
 
@@ -154,6 +156,52 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 prefs.soundEnabled ? 'translate-x-6' : 'translate-x-1'
               }`}
             />
+          </button>
+        </div>
+
+        {/* Disconnect Reminder (Lâcher le téléphone) */}
+        <div className="pt-2 border-t border-neutral-800/40">
+          <button
+            onClick={() => {
+              playMinimalClick(prefs.soundEnabled);
+              onClose();
+              onOpenDisconnectReminder();
+            }}
+            id="btn-settings-open-disconnect-reminder"
+            className={`w-full p-2.5 rounded-xl border flex items-center justify-between transition-all cursor-pointer ${
+              prefs.disconnectReminder?.enabled
+                ? isLight
+                  ? 'bg-amber-50/70 border-amber-300 text-neutral-900'
+                  : 'bg-amber-500/10 border-amber-500/30 text-neutral-100'
+                : isLight
+                ? 'bg-neutral-50 border-neutral-200 text-neutral-800 hover:bg-neutral-100'
+                : 'bg-neutral-900/60 border-neutral-800 text-neutral-300 hover:bg-neutral-900'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <div
+                className={`w-7 h-7 rounded-lg flex items-center justify-center ${
+                  prefs.disconnectReminder?.enabled
+                    ? 'bg-amber-500 text-black'
+                    : 'bg-neutral-800 text-neutral-400'
+                }`}
+              >
+                <Moon className="w-3.5 h-3.5" />
+              </div>
+              <div>
+                <span className="text-xs font-semibold block">Rappels Déconnexion</span>
+                <span className="text-[10px] text-neutral-400 block">
+                  {prefs.disconnectReminder?.enabled
+                    ? prefs.disconnectReminder.scheduleMode === 'custom_days'
+                      ? 'Personnalisé chaque jour'
+                      : prefs.disconnectReminder.scheduleMode === 'weekdays_weekend'
+                      ? `Semaine ${prefs.disconnectReminder.weekdayTime || '21:30'} • WE ${prefs.disconnectReminder.weekendTime || '23:00'}`
+                      : `Actif à ${prefs.disconnectReminder.time} (${prefs.disconnectReminder.days?.length || 0}j/7)`
+                    : 'Désactivé • Lâcher le téléphone'}
+                </span>
+              </div>
+            </div>
+            <span className="text-[11px] text-amber-500 font-medium">Modifier →</span>
           </button>
         </div>
 
