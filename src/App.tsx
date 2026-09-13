@@ -17,6 +17,7 @@ import {
   recordCompletedFocusSession,
 } from './utils/storage';
 import { playMinimalClick, triggerHaptic } from './utils/audio';
+import { launchAppUrl } from './utils/launcher';
 import { ClockHeader } from './components/ClockHeader';
 import { AppGrid } from './components/AppGrid';
 import { StreakPage } from './components/StreakPage';
@@ -74,15 +75,15 @@ export default function App() {
     if (preferences.intentionalPause) {
       setPendingApp(app);
     } else {
-      // Directly launch
+      // Directly launch with priority to deep link
       const urlToOpen = app.deepLink || app.url;
-      window.open(urlToOpen, '_blank', 'noopener,noreferrer');
+      launchAppUrl(urlToOpen, app.url);
     }
   };
 
-  const handleDirectLaunch = (url: string) => {
+  const handleDirectLaunch = (url: string, fallbackUrl?: string) => {
     setPendingApp(null);
-    window.open(url, '_blank', 'noopener,noreferrer');
+    launchAppUrl(url, fallbackUrl);
   };
 
   const handleToggleDay = (screenHours?: number, reflection?: string) => {
@@ -188,8 +189,8 @@ export default function App() {
         )}
 
         <div className="flex-1 flex flex-col justify-between px-4 sm:px-6 py-2">
-          {activeFocusSession && activeFocusSession.isActive && activeFocusSession.endTime > Date.now() ? (
-            /* Locked Focus Mode Screen: Completely blocks access to apps until timer finishes */
+          {activeFocusSession && activeFocusSession.isActive ? (
+            /* Focus Mode Screen: Completely blocks access during countdown, then displays visual & auditory completion alert */
             <FocusModeScreen
               session={activeFocusSession}
               onComplete={handleCompleteFocus}

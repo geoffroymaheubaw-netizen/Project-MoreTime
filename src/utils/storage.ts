@@ -200,7 +200,9 @@ export function loadFocusSession(): FocusSession | null {
     const raw = localStorage.getItem(FOCUS_KEY);
     if (raw) {
       const session: FocusSession = JSON.parse(raw);
-      if (session.isActive && session.endTime > Date.now()) {
+      // Keep session if still running, or if ended within the last 24h waiting for user to acknowledge completion
+      const endedRecently = Date.now() - session.endTime < 24 * 60 * 60 * 1000;
+      if (session.isActive && endedRecently) {
         return session;
       } else {
         localStorage.removeItem(FOCUS_KEY);

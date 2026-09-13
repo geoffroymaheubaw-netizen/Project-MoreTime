@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { ExternalLink, X, Wind, ArrowRight, ShieldCheck, Check } from 'lucide-react';
+import { ExternalLink, X, Wind, Check, Smartphone, Globe } from 'lucide-react';
 import { AppLauncherItem, ThemeMode } from '../types';
 import { playMinimalClick } from '../utils/audio';
 
 interface MindfulModalProps {
   app: AppLauncherItem | null;
   onClose: () => void;
-  onLaunch: (url: string) => void;
+  onLaunch: (targetUrl: string, fallbackWebUrl?: string) => void;
   theme: ThemeMode;
   soundEnabled: boolean;
 }
@@ -45,10 +45,10 @@ export const MindfulModal: React.FC<MindfulModalProps> = ({
   const isLight = theme === 'light';
   const isEink = theme === 'eink';
 
-  const handleOpenTarget = (useDeepLink = false) => {
+  const handleOpenTarget = (useDeepLink: boolean) => {
     playMinimalClick(soundEnabled);
     const targetUrl = useDeepLink && app.deepLink ? app.deepLink : app.url;
-    onLaunch(targetUrl);
+    onLaunch(targetUrl, app.url);
   };
 
   return (
@@ -127,12 +127,44 @@ export const MindfulModal: React.FC<MindfulModalProps> = ({
         </div>
 
         {/* Action Buttons */}
-        <div className="w-full flex flex-col gap-2.5">
-          {/* If app has deepLink (like mobilenotes:// or calshow:), offer direct app open */}
-          {app.deepLink && (
+        <div className="w-full flex flex-col gap-2">
+          {/* If app has deepLink (like chatgpt://, claude://, mobilenotes:// or calshow:), offer direct app open */}
+          {app.deepLink ? (
+            <>
+              <button
+                onClick={() => handleOpenTarget(true)}
+                id="btn-launch-deep-link"
+                className={`w-full py-3 px-4 rounded-xl font-medium text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm ${
+                  isLight
+                    ? 'bg-neutral-900 text-white hover:bg-neutral-800'
+                    : isEink
+                    ? 'bg-neutral-900 text-white font-bold'
+                    : 'bg-white text-neutral-950 font-semibold hover:bg-neutral-200'
+                }`}
+              >
+                <Smartphone className="w-4 h-4" />
+                <span>Ouvrir l'application mobile ({app.name})</span>
+              </button>
+
+              <button
+                onClick={() => handleOpenTarget(false)}
+                id="btn-launch-web-link"
+                className={`w-full py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                  isLight
+                    ? 'border border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                    : isEink
+                    ? 'border border-neutral-400 text-neutral-800'
+                    : 'border border-neutral-800 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
+                }`}
+              >
+                <Globe className="w-3.5 h-3.5" />
+                <span>Ouvrir la version Web (navigateur)</span>
+              </button>
+            </>
+          ) : (
             <button
-              onClick={() => handleOpenTarget(true)}
-              id="btn-launch-deep-link"
+              onClick={() => handleOpenTarget(false)}
+              id="btn-launch-web-link"
               className={`w-full py-3 px-4 rounded-xl font-medium text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
                 isLight
                   ? 'bg-neutral-900 text-white hover:bg-neutral-800'
@@ -141,37 +173,18 @@ export const MindfulModal: React.FC<MindfulModalProps> = ({
                   : 'bg-white text-neutral-950 hover:bg-neutral-200'
               }`}
             >
-              <span>Ouvrir dans l'application téléphone</span>
+              <span>Accéder à {app.name}</span>
               <ExternalLink className="w-3.5 h-3.5" />
             </button>
           )}
 
           <button
-            onClick={() => handleOpenTarget(false)}
-            id="btn-launch-web-link"
-            className={`w-full py-3 px-4 rounded-xl font-medium text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
-              !app.deepLink
-                ? isLight
-                  ? 'bg-neutral-900 text-white hover:bg-neutral-800'
-                  : isEink
-                  ? 'bg-neutral-900 text-white'
-                  : 'bg-white text-neutral-950 hover:bg-neutral-200'
-                : isLight
-                ? 'border border-neutral-300 text-neutral-800 hover:bg-neutral-100'
-                : 'border border-neutral-700 text-neutral-300 hover:bg-neutral-900'
-            }`}
-          >
-            <span>{app.deepLink ? 'Ouvrir la version Web' : 'Continuer vers l\'application'}</span>
-            <ExternalLink className="w-3.5 h-3.5" />
-          </button>
-
-          <button
             onClick={onClose}
             id="btn-cancel-mindful"
-            className={`w-full py-2.5 px-4 rounded-xl text-xs transition-colors cursor-pointer ${
+            className={`w-full py-2 px-4 rounded-xl text-xs transition-colors cursor-pointer mt-1 ${
               isLight
-                ? 'text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100'
-                : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
+                ? 'text-neutral-400 hover:text-neutral-700'
+                : 'text-neutral-500 hover:text-neutral-300'
             }`}
           >
             Annuler et éteindre l'écran

@@ -33,6 +33,11 @@ export const FocusSetupModal: React.FC<FocusSetupModalProps> = ({
       ? customInput
       : selectedMinutes;
 
+    // Proactively request browser notification permission if available
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
+
     playZenChime(soundEnabled);
     triggerHaptic(true);
     onStartFocus(finalMinutes);

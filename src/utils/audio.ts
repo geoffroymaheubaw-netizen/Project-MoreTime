@@ -78,3 +78,56 @@ export function triggerHaptic(enabled = true): void {
     // ignore
   }
 }
+
+export function triggerFocusCompleteHaptic(enabled = true): void {
+  if (!enabled) return;
+  try {
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      // Pattern: buzz, pause, buzz, pause, long celebratory buzz
+      navigator.vibrate([200, 100, 200, 100, 450]);
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+/**
+ * Plays a resonant, rich completion gong/chime sequence using Web Audio API
+ */
+export function playFocusCompleteAlarm(enabled = true): void {
+  if (!enabled) return;
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+
+    // Harmonic chord: A4 (440Hz), C#5 (554.37Hz), E5 (659.25Hz), A5 (880Hz)
+    const notes = [
+      { freq: 440, delay: 0, duration: 2.2, volume: 0.12 },
+      { freq: 554.37, delay: 0.16, duration: 2.2, volume: 0.14 },
+      { freq: 659.25, delay: 0.32, duration: 2.4, volume: 0.15 },
+      { freq: 880, delay: 0.48, duration: 2.8, volume: 0.16 },
+    ];
+
+    notes.forEach(({ freq, delay, duration, volume }) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + delay);
+
+      // Gentle bell strike attack
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime + delay);
+      gain.gain.exponentialRampToValueAtTime(volume, ctx.currentTime + delay + 0.04);
+      // Natural long reverberant decay
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + delay + duration);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(ctx.currentTime + delay);
+      osc.stop(ctx.currentTime + delay + duration);
+    });
+  } catch (e) {
+    // audio context suspended or blocked
+  }
+}
