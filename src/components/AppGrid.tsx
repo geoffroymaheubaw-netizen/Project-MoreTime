@@ -12,6 +12,7 @@ import {
   Lock,
   Youtube,
   Play,
+  CloudSun,
 } from 'lucide-react';
 import { AppLauncherItem, ThemeMode } from '../types';
 import { LAUNCHER_APPS } from '../data/apps';
@@ -46,6 +47,8 @@ export const AppGrid: React.FC<AppGridProps> = ({
         return <CalendarIcon className="w-5 h-5" />;
       case 'apple-notes':
         return <PenLine className="w-5 h-5" />;
+      case 'weather':
+        return <CloudSun className="w-5 h-5 text-amber-400" />;
       case 'zentube':
         return <Play className="w-5 h-5 text-emerald-400" />;
       case 'youtube':

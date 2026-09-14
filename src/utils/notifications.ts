@@ -80,6 +80,63 @@ export function isPushNotificationSupported(): boolean {
 }
 
 /**
+ * Detects whether the app is on iOS, whether it's running as a PWA (standalone),
+ * and general Push notification capabilities.
+ */
+export function detectMobilePushEnvironment(): {
+  isIOS: boolean;
+  isStandalone: boolean;
+  isPushSupported: boolean;
+  permission: NotificationPermission | 'unsupported';
+  canPushWhileClosed: boolean;
+  guidanceText?: string;
+} {
+  if (typeof window === 'undefined') {
+    return {
+      isIOS: false,
+      isStandalone: false,
+      isPushSupported: false,
+      permission: 'unsupported',
+      canPushWhileClosed: false,
+    };
+  }
+
+  const userAgent = window.navigator.userAgent.toLowerCase();
+  const isIOS = /iphone|ipad|ipod/.test(userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isStandalone =
+    window.matchMedia('(display-mode: standalone)').matches ||
+    Boolean((window.navigator as any).standalone) ||
+    document.referrer.includes('android-app://');
+  const isPushSupported = isPushNotificationSupported();
+  const permission = 'Notification' in window ? Notification.permission : 'unsupported';
+
+  // On iOS, Apple strictly requires the app to be installed to the Home Screen (standalone)
+  // before PushManager is allowed to receive pushes while closed.
+  let canPushWhileClosed = isPushSupported;
+  let guidanceText: string | undefined;
+
+  if (isIOS) {
+    if (!isStandalone) {
+      canPushWhileClosed = false;
+      guidanceText = "Sur iPhone : appuyez sur Partager puis « Sur l'écran d'accueil » pour activer les notifications quand Safari est fermé.";
+    } else if (permission !== 'granted') {
+      guidanceText = "Autorisez les notifications pour recevoir les alertes de déconnexion sur votre écran verrouillé.";
+    }
+  } else if (!isPushSupported) {
+    guidanceText = "Ce navigateur mobile ne supporte pas l'API Push standard.";
+  }
+
+  return {
+    isIOS,
+    isStandalone,
+    isPushSupported,
+    permission,
+    canPushWhileClosed,
+    guidanceText,
+  };
+}
+
+/**
  * Gets the current active PushSubscription on the client if any
  */
 export async function getPushSubscription(): Promise<PushSubscription | null> {
@@ -108,7 +165,7 @@ export async function subscribeToWebPush(
   }
 
   try {
-    // 1. Request permission
+    // 1. Request browser permission
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') {
       return {
@@ -127,8 +184,15 @@ export async function subscribeToWebPush(
     }
 
     // 3. Register or get Service Worker
-    const registration = await navigator.serviceWorker.ready;
-    if (!registration.pushManager) {
+    let registration: ServiceWorkerRegistration;
+    try {
+      registration = await navigator.serviceWorker.ready;
+    } catch {
+      registration = await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.ready;
+    }
+
+    if (!registration || !registration.pushManager) {
       return {
         success: false,
         error: 'Le gestionnaire de push du navigateur est indisponible.',
@@ -137,8 +201,30 @@ export async function subscribeToWebPush(
 
     // 4. Check existing or create subscription
     let subscription = await registration.pushManager.getSubscription();
+    const convertedVapidKey = urlBase64ToUint8Array(publicKey);
+
+    // If subscription exists, verify if applicationServerKey matches current server key
+    if (subscription) {
+      const existingKeyRaw = subscription.options?.applicationServerKey;
+      let matches = false;
+      if (existingKeyRaw) {
+        const existingArray = new Uint8Array(existingKeyRaw);
+        if (existingArray.length === convertedVapidKey.length) {
+          matches = existingArray.every((b, i) => b === convertedVapidKey[i]);
+        }
+      }
+      if (!matches) {
+        console.log('[Web Push] Existing subscription key differs from current server key, renewing...');
+        try {
+          await subscription.unsubscribe();
+        } catch {
+          // ignore
+        }
+        subscription = null;
+      }
+    }
+
     if (!subscription) {
-      const convertedVapidKey = urlBase64ToUint8Array(publicKey);
       subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: convertedVapidKey,
@@ -300,13 +386,21 @@ export function getNotificationPermissionStatus(): NotificationPermission | 'uns
 /**
  * Requests phone/browser permission for web push notifications
  */
-export async function requestPhoneNotificationPermission(): Promise<boolean> {
+export async function requestPhoneNotificationPermission(
+  settings?: DisconnectReminderSettings
+): Promise<boolean> {
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return false;
   }
 
   try {
     const permission = await Notification.requestPermission();
+    if (permission === 'granted' && isPushNotificationSupported()) {
+      // Automatically register Web Push so the server can send reminders when the site is closed
+      subscribeToWebPush(settings).catch((err) => {
+        console.warn('Auto-subscribe to push after permission grant error:', err);
+      });
+    }
     return permission === 'granted';
   } catch (error) {
     console.warn('Error requesting notification permission:', error);

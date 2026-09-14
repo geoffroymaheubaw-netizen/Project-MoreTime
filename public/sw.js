@@ -52,7 +52,31 @@ self.addEventListener('push', (event) => {
     ],
   };
 
-  event.waitUntil(self.registration.showNotification(data.title, options));
+  const showSafeNotification = async () => {
+    try {
+      // First attempt with full rich actions and vibration
+      await self.registration.showNotification(data.title, options);
+    } catch (err) {
+      console.warn('Rich notification failed, falling back to minimal options for device compatibility:', err);
+      try {
+        // Fallback for Safari/iOS or browsers that do not support actions/vibrate
+        await self.registration.showNotification(data.title, {
+          body: data.body,
+          icon: '/pwa-192x192.png',
+          badge: '/pwa-192x192.png',
+          tag: data.tag || 'curfew-disconnect',
+          renotify: true,
+          data: {
+            url: data.url || '/',
+          },
+        });
+      } catch (fallbackErr) {
+        console.error('All notification attempts failed:', fallbackErr);
+      }
+    }
+  };
+
+  event.waitUntil(showSafeNotification());
 });
 
 // NOTIFICATION CLICK LISTENER

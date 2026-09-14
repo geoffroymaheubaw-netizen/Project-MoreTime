@@ -60,7 +60,28 @@ self.addEventListener('push', (event: PushEvent) => {
     ],
   };
 
-  event.waitUntil(self.registration.showNotification(data.title, options));
+  const showSafeNotification = async () => {
+    try {
+      await self.registration.showNotification(data.title, options);
+    } catch (err) {
+      console.warn('Rich notification failed, falling back to minimal options:', err);
+      try {
+        await self.registration.showNotification(data.title, {
+          body: data.body,
+          icon: '/pwa-192x192.png',
+          badge: '/pwa-192x192.png',
+          tag: data.tag || 'curfew-disconnect',
+          data: {
+            url: data.url || '/',
+          },
+        } as any);
+      } catch (fallbackErr) {
+        console.error('All notification attempts failed:', fallbackErr);
+      }
+    }
+  };
+
+  event.waitUntil(showSafeNotification());
 });
 
 // NOTIFICATION CLICK LISTENER

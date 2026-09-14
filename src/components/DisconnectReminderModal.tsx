@@ -37,6 +37,7 @@ import {
   getPushSubscription,
   subscribeToWebPush,
   sendBackgroundTestPush,
+  detectMobilePushEnvironment,
 } from '../utils/notifications';
 
 interface DisconnectReminderModalProps {
@@ -85,12 +86,14 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
   const [isSubscribingPush, setIsSubscribingPush] = useState<boolean>(false);
   const [countdownTest, setCountdownTest] = useState<number | null>(null);
   const [pushStatusMessage, setPushStatusMessage] = useState<string | null>(null);
+  const [mobileEnv, setMobileEnv] = useState(() => detectMobilePushEnvironment());
 
   // Sync state on open
   React.useEffect(() => {
     if (isOpen) {
       setLocalSettings(getNormalizedSettings(settings));
       setPermissionStatus(getNotificationPermissionStatus());
+      setMobileEnv(detectMobilePushEnvironment());
       setTestSent(false);
       setCountdownTest(null);
       setPushStatusMessage(null);
@@ -943,7 +946,7 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
 
         {/* Notification permissions & Web Push status box */}
         <div
-          className={`p-3 rounded-2xl border text-xs flex flex-col gap-3 ${
+          className={`p-3.5 rounded-2xl border text-xs flex flex-col gap-3 ${
             isLight
               ? 'bg-neutral-50 border-neutral-200 text-neutral-800'
               : isEink
@@ -961,26 +964,44 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
               className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
                 isPushSubscribed
                   ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                  : 'bg-neutral-800 text-neutral-400 border border-neutral-700'
+                  : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
               }`}
             >
-              {isPushSubscribed ? 'Actif en arrière-plan' : 'Local'}
+              {isPushSubscribed ? 'Synchronisé avec le serveur' : 'Action requise'}
             </span>
           </div>
 
           <p className="text-[11px] text-neutral-400 leading-relaxed">
-            Grâce au protocole Web Push et au Service Worker, votre téléphone reçoit vos rappels de couvre-feu
-            même si le navigateur ou l'onglet est <strong className="text-neutral-200">totalement fermé</strong>.
+            Grâce au protocole Web Push et au Service Worker, votre téléphone reçoit vos alertes de couvre-feu
+            même si le navigateur ou l'onglet est <strong className="text-neutral-200">totalement fermé</strong> ou que votre écran est verrouillé.
           </p>
 
-          {/* iOS note */}
-          <div className="p-2 rounded-xl bg-neutral-950/40 border border-neutral-800/80 text-[10.5px] text-neutral-400 leading-relaxed flex items-start gap-2">
-            <Smartphone className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-            <div>
-              <strong className="text-neutral-300 block font-medium">Sur iPhone (iOS 16.4+) :</strong>
-              Ajoutez l'application à votre écran d'accueil (via le bouton Partager <span className="text-amber-400">« Sur l'écran d'accueil »</span>) pour autoriser les notifications quand Safari est fermé.
+          {/* Diagnostic indicators */}
+          <div className="grid grid-cols-2 gap-2 p-2 rounded-xl bg-neutral-950/40 border border-neutral-800/80 text-[11px]">
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[10px] text-neutral-500">Autorisation navigateur</span>
+              <span className={`font-semibold ${permissionStatus === 'granted' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                {permissionStatus === 'granted' ? '✓ Accordée' : permissionStatus === 'denied' ? '✕ Bloquée' : '⏳ En attente'}
+              </span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[10px] text-neutral-500">Serveur d'arrière-plan</span>
+              <span className={`font-semibold ${isPushSubscribed ? 'text-emerald-400' : 'text-amber-400'}`}>
+                {isPushSubscribed ? '✓ Connecté' : '○ Non relié'}
+              </span>
             </div>
           </div>
+
+          {/* iOS note for Safari */}
+          {mobileEnv.isIOS && !mobileEnv.isStandalone && (
+            <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300 leading-relaxed flex items-start gap-2">
+              <Smartphone className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <strong className="text-white block font-medium">Important sur iPhone (iOS) :</strong>
+                Apple bloque les notifications en arrière-plan dans Safari. Pour les recevoir écran éteint : touchez le bouton Partager <span className="font-semibold text-white">« Sur l'écran d'accueil »</span>, puis ouvrez l'application depuis votre écran d'accueil.
+              </div>
+            </div>
+          )}
 
           {/* Action to subscribe / link device */}
           {!isPushSubscribed ? (
@@ -988,15 +1009,15 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
               onClick={handleEnablePush}
               disabled={isSubscribingPush}
               id="btn-enable-web-push"
-              className="w-full py-2 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-neutral-950 font-semibold text-xs flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-50"
+              className="w-full py-2.5 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-neutral-950 font-semibold text-xs flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-50 shadow-xs"
             >
               <Zap className="w-3.5 h-3.5 fill-current" />
-              <span>{isSubscribingPush ? 'Activation en cours...' : 'Activer les notifications site fermé'}</span>
+              <span>{isSubscribingPush ? 'Synchronisation en cours...' : 'Activer les notifications site fermé'}</span>
             </button>
           ) : (
-            <div className="flex items-center gap-2 text-[11px] text-emerald-400 font-medium">
-              <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              <span>Votre appareil est synchronisé pour recevoir les alertes hors ligne</span>
+            <div className="flex items-center gap-2 p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-400 font-medium">
+              <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>Votre appareil est synchronisé : alertes actives site fermé & écran verrouillé</span>
             </div>
           )}
 

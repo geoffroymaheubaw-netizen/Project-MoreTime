@@ -18,6 +18,7 @@ import {
 } from './utils/storage';
 import { playMinimalClick, triggerHaptic } from './utils/audio';
 import { launchAppUrl, getPrimaryDeepLink } from './utils/launcher';
+import { LAUNCHER_APPS } from './data/apps';
 import { ClockHeader } from './components/ClockHeader';
 import { AppGrid } from './components/AppGrid';
 import { StreakPage } from './components/StreakPage';
@@ -37,9 +38,12 @@ import {
   confirmNightShutdownOnServer,
   getPushSubscription,
   syncSubscriptionWithServer,
+  subscribeToWebPush,
+  requestPhoneNotificationPermission,
+  detectMobilePushEnvironment,
 } from './utils/notifications';
 import { playBedtimeChime, triggerBedtimeHaptic } from './utils/audio';
-import { Smartphone, Monitor, Moon, Power, ShieldCheck } from 'lucide-react';
+import { Smartphone, Monitor, Moon, Power, ShieldCheck, BellRing, ChevronRight } from 'lucide-react';
 
 export default function App() {
   const [stats, setStats] = useState<UserStats>(loadStats);
@@ -82,6 +86,8 @@ export default function App() {
   });
   const [activeFocusSession, setActiveFocusSession] = useState<FocusSession | null>(loadFocusSession);
   const [desktopPhoneFrame, setDesktopPhoneFrame] = useState(true);
+  const [mobilePushEnv, setMobilePushEnv] = useState(() => detectMobilePushEnvironment());
+  const [isPushSubscribed, setIsPushSubscribed] = useState(false);
 
   // Sync theme changes to html body background
   useEffect(() => {
@@ -266,21 +272,36 @@ export default function App() {
     savePreferences(newPrefs);
 
     // Keep server push scheduler updated with new times/settings
-    getPushSubscription().then((sub) => {
-      if (sub) {
-        syncSubscriptionWithServer(sub, nextReminder);
-      }
-    });
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      subscribeToWebPush(nextReminder).then((res) => {
+        if (res.success) setIsPushSubscribed(true);
+      }).catch(() => {});
+    } else {
+      getPushSubscription().then((sub) => {
+        if (sub) {
+          syncSubscriptionWithServer(sub, nextReminder);
+          setIsPushSubscribed(true);
+        }
+      });
+    }
   };
 
-  // Sync push settings on initial mount
+  // Sync push settings and auto-subscribe if permission is already granted
   useEffect(() => {
+    const env = detectMobilePushEnvironment();
+    setMobilePushEnv(env);
+
     getPushSubscription().then((sub) => {
+      setIsPushSubscribed(Boolean(sub));
       if (sub) {
         syncSubscriptionWithServer(sub, preferences.disconnectReminder);
+      } else if (env.permission === 'granted' && preferences.disconnectReminder.enabled) {
+        subscribeToWebPush(preferences.disconnectReminder).then((res) => {
+          if (res.success) setIsPushSubscribed(true);
+        }).catch(() => {});
       }
     });
-  }, []);
+  }, [preferences.disconnectReminder]);
 
   const curfewStatus = getCurfewWindowStatus(preferences.disconnectReminder);
   const isCurfewWindowActive = curfewStatus.isWindowActive;
@@ -534,10 +555,61 @@ export default function App() {
                   playMinimalClick(preferences.soundEnabled);
                   setIsDisconnectReminderOpen(true);
                 }}
+                onOpenWeather={() => {
+                  const weatherApp = LAUNCHER_APPS.find((a) => a.id === 'weather');
+                  if (weatherApp) {
+                    handleSelectApp(weatherApp);
+                  }
+                }}
                 disconnectReminder={preferences.disconnectReminder}
                 theme={preferences.theme}
                 isCurfewConfirmed={isCurfewConfirmedForNight}
               />
+
+              {/* Notification prompt banner if disconnect reminders enabled but notifications not active on phone */}
+              {preferences.disconnectReminder.enabled && !isCurfewConfirmedForNight && (
+                !isPushSubscribed || mobilePushEnv.permission !== 'granted' || (mobilePushEnv.isIOS && !mobilePushEnv.isStandalone)
+              ) && (
+                <div
+                  onClick={async () => {
+                    playMinimalClick(preferences.soundEnabled);
+                    if (mobilePushEnv.isIOS && !mobilePushEnv.isStandalone) {
+                      setIsDisconnectReminderOpen(true);
+                    } else {
+                      const granted = await requestPhoneNotificationPermission(preferences.disconnectReminder);
+                      const env = detectMobilePushEnvironment();
+                      setMobilePushEnv(env);
+                      if (granted) {
+                        const res = await subscribeToWebPush(preferences.disconnectReminder);
+                        if (res.success) setIsPushSubscribed(true);
+                      }
+                    }
+                  }}
+                  className={`mt-3 mb-1 px-3.5 py-2 rounded-2xl border text-xs flex items-center justify-between gap-2.5 transition-all cursor-pointer shadow-xs ${
+                    preferences.theme === 'light'
+                      ? 'bg-amber-50 border-amber-200 text-amber-900 hover:bg-amber-100/80'
+                      : preferences.theme === 'eink'
+                      ? 'bg-[#e4e2da] border-neutral-800 text-neutral-900'
+                      : 'bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/15'
+                  }`}
+                  id="banner-enable-offline-notifications"
+                >
+                  <div className="flex items-center gap-2">
+                    <BellRing className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span className="text-[11px] leading-tight">
+                      {mobilePushEnv.isIOS && !mobilePushEnv.isStandalone
+                        ? "iPhone : activez les alertes site fermé en ajoutant à l'écran d'accueil"
+                        : mobilePushEnv.permission === 'denied'
+                        ? "Notifications bloquées : autorisez-les pour recevoir les alertes site fermé"
+                        : "Activer les notifications téléphone (site fermé & écran éteint)"}
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500 text-neutral-950 shrink-0 flex items-center gap-0.5">
+                    <span>{mobilePushEnv.isIOS && !mobilePushEnv.isStandalone ? 'Aide' : 'Activer'}</span>
+                    <ChevronRight className="w-3 h-3" />
+                  </span>
+                </div>
+              )}
 
               {/* Central App Launcher Grid (The apps + Focus button + Streak button) */}
               <AppGrid

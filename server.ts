@@ -184,6 +184,78 @@ async function sendWebPushToSubscriber(
   }
 }
 
+function evaluateSubscriberCurfew(
+  settings: SubscriberSettings,
+  now: Date
+): {
+  isCurfewActive: boolean;
+  cycleKey: string;
+  scheduledTime: string;
+  minutesElapsed: number;
+} {
+  // Convert UTC server time to user's local time using their reported timezoneOffset (in minutes)
+  const userLocalMs = now.getTime() - settings.timezoneOffset * 60000;
+  const userLocalDate = new Date(userLocalMs);
+
+  const todayIndex = userLocalDate.getUTCDay();
+  const currentHour = userLocalDate.getUTCHours();
+
+  // 1. Check early morning (< 06:00) continuation of yesterday's evening curfew
+  if (currentHour < 6) {
+    const yesterdayIndex = (todayIndex + 6) % 7;
+    const yesterdaySchedule = resolveScheduledTimeForUser(settings, yesterdayIndex);
+    if (yesterdaySchedule.enabled) {
+      const [yH, yM] = yesterdaySchedule.time.split(':').map(Number);
+      if (yH >= 12) {
+        const yDate = new Date(userLocalDate);
+        yDate.setUTCDate(yDate.getUTCDate() - 1);
+        yDate.setUTCHours(yH, yM, 0, 0);
+
+        const diffYMs = userLocalMs - yDate.getTime();
+        const yMinutesElapsed = Math.floor(diffYMs / 60000);
+        // Active from yesterday evening until 06:00 AM next morning (max 10 hours)
+        if (diffYMs >= 0 && diffYMs <= 10 * 3600 * 1000) {
+          const cycleKey = computeCycleKey(userLocalDate, yesterdaySchedule.time);
+          return {
+            isCurfewActive: settings.enabled,
+            cycleKey,
+            scheduledTime: yesterdaySchedule.time,
+            minutesElapsed: yMinutesElapsed,
+          };
+        }
+      }
+    }
+  }
+
+  // 2. Today's schedule
+  const todaySchedule = resolveScheduledTimeForUser(settings, todayIndex);
+  const cycleKey = computeCycleKey(userLocalDate, todaySchedule.time);
+
+  if (!settings.enabled || !todaySchedule.enabled) {
+    return {
+      isCurfewActive: false,
+      cycleKey,
+      scheduledTime: todaySchedule.time,
+      minutesElapsed: 0,
+    };
+  }
+
+  const [tH, tM] = todaySchedule.time.split(':').map(Number);
+  const targetDate = new Date(userLocalDate);
+  targetDate.setUTCHours(tH, tM, 0, 0);
+
+  const diffMs = userLocalMs - targetDate.getTime();
+  const minutesElapsed = Math.floor(diffMs / 60000);
+  const isCurfewActive = diffMs >= 0 && diffMs <= 10 * 3600 * 1000;
+
+  return {
+    isCurfewActive,
+    cycleKey,
+    scheduledTime: todaySchedule.time,
+    minutesElapsed,
+  };
+}
+
 // Background scheduler checking every 30 seconds
 setInterval(async () => {
   if (subscribers.size === 0) return;
@@ -195,35 +267,15 @@ setInterval(async () => {
     const { settings } = sub;
     if (!settings.enabled) continue;
 
-    // Convert to user local time using their reported timezoneOffset (in minutes)
-    // JS getTimezoneOffset() is (UTC - local) in minutes, so local = UTC - offset*60000
-    const userLocalMs = now.getTime() - settings.timezoneOffset * 60000;
-    const userLocalDate = new Date(userLocalMs);
+    const evaluation = evaluateSubscriberCurfew(settings, now);
+    if (!evaluation.isCurfewActive) continue;
 
-    const userDayIndex = userLocalDate.getUTCDay(); // 0-6
-    const userHour = userLocalDate.getUTCHours();
-    const userMinute = userLocalDate.getUTCMinutes();
-
-    const schedule = resolveScheduledTimeForUser(settings, userDayIndex);
-    if (!schedule.enabled) continue;
-
-    const cycleKey = computeCycleKey(userLocalDate, schedule.time);
+    const { cycleKey, minutesElapsed } = evaluation;
 
     // If user already pressed "J'arrête mon téléphone" on site for this cycle, skip
     if (settings.userConfirmedNightCycle === cycleKey) {
       continue;
     }
-
-    const [tH, tM] = schedule.time.split(':').map(Number);
-    const targetUserDate = new Date(userLocalDate);
-    targetUserDate.setUTCHours(tH, tM, 0, 0);
-
-    const diffMs = userLocalMs - targetUserDate.getTime();
-    const minutesElapsed = Math.floor(diffMs / 60000);
-
-    // Active if current local time >= scheduled time and within 10 hours
-    const isCurfewActive = diffMs >= 0 && diffMs <= 10 * 3600 * 1000;
-    if (!isCurfewActive) continue;
 
     const hasTriggeredInCycle =
       settings.lastPushCycle === cycleKey &&

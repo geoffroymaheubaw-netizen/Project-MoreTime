@@ -60,6 +60,18 @@ export function getPrimaryDeepLink(app: AppLauncherItem): string | undefined {
     return 'zentube://';
   }
 
+  if (app.id === 'weather') {
+    if (platform === 'ios') {
+      // Official Apple Weather app scheme on iPhone / iPad
+      return 'weather://';
+    }
+    if (platform === 'android') {
+      // Android intent to open Google Weather or device weather provider with fallback
+      return 'intent://www.google.com/search?q=meteo#Intent;scheme=https;package=com.google.android.googlequicksearchbox;S.browser_fallback_url=https%3A%2F%2Fmeteofrance.com;end';
+    }
+    return 'weather://';
+  }
+
   return app.deepLink;
 }
 
@@ -68,6 +80,14 @@ export function getPrimaryDeepLink(app: AppLauncherItem): string | undefined {
  */
 export function getAlternativeDeepLink(app: AppLauncherItem): string | undefined {
   const platform = getMobilePlatform();
+
+  if (app.id === 'weather') {
+    if (platform === 'android') {
+      // Direct custom weather scheme common on Samsung and other Android vendors
+      return 'weather://';
+    }
+    return 'https://meteofrance.com/';
+  }
 
   if (app.id === 'google-notebook') {
     if (platform === 'android') {

@@ -61,6 +61,16 @@ export const LAUNCHER_APPS: AppLauncherItem[] = [
     description: 'Visionnage sobre sans algorithmes, flux infini ni pièges d\'attention',
     intentPrompt: 'Quelle vidéo précise souhaitez-vous regarder ?',
   },
+  {
+    id: 'weather',
+    name: 'Météo',
+    category: 'Information essentielle',
+    url: 'https://meteofrance.com/',
+    deepLink: 'weather://',
+    iconName: 'weather',
+    description: 'Prévisions du jour & conditions météorologiques',
+    intentPrompt: 'Consultez la météo du jour puis profitez du monde extérieur.',
+  },
 ];
 
 export const MINDFUL_QUOTES = [
