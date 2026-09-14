@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Moon,
@@ -14,6 +14,9 @@ import {
   Coffee,
   CalendarDays,
   Sliders,
+  Radio,
+  Lock,
+  Zap,
 } from 'lucide-react';
 import {
   DisconnectReminderSettings,
@@ -30,6 +33,10 @@ import {
   triggerDisconnectAlert,
   getScheduledTimeForDay,
   getScheduledTimeForToday,
+  isPushNotificationSupported,
+  getPushSubscription,
+  subscribeToWebPush,
+  sendBackgroundTestPush,
 } from '../utils/notifications';
 
 interface DisconnectReminderModalProps {
@@ -73,6 +80,11 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
     getNotificationPermissionStatus()
   );
   const [testSent, setTestSent] = useState(false);
+  const [isPushSupported] = useState<boolean>(() => isPushNotificationSupported());
+  const [isPushSubscribed, setIsPushSubscribed] = useState<boolean>(false);
+  const [isSubscribingPush, setIsSubscribingPush] = useState<boolean>(false);
+  const [countdownTest, setCountdownTest] = useState<number | null>(null);
+  const [pushStatusMessage, setPushStatusMessage] = useState<string | null>(null);
 
   // Sync state on open
   React.useEffect(() => {
@@ -80,6 +92,13 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
       setLocalSettings(getNormalizedSettings(settings));
       setPermissionStatus(getNotificationPermissionStatus());
       setTestSent(false);
+      setCountdownTest(null);
+      setPushStatusMessage(null);
+
+      // Check push subscription
+      getPushSubscription().then((sub) => {
+        setIsPushSubscribed(Boolean(sub));
+      });
     }
   }, [isOpen, settings]);
 
@@ -220,6 +239,60 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
     playMinimalClick(soundEnabled);
     const granted = await requestPhoneNotificationPermission();
     setPermissionStatus(granted ? 'granted' : 'denied');
+  };
+
+  const handleEnablePush = async () => {
+    playMinimalClick(soundEnabled);
+    setIsSubscribingPush(true);
+    setPushStatusMessage(null);
+    try {
+      const res = await subscribeToWebPush(localSettings);
+      if (res.success) {
+        setIsPushSubscribed(true);
+        setPermissionStatus('granted');
+        setPushStatusMessage('Notifications d’arrière-plan activées avec succès !');
+      } else {
+        setPushStatusMessage(res.error || 'Erreur lors de l’activation.');
+      }
+    } catch {
+      setPushStatusMessage('Erreur lors de l’activation des notifications.');
+    } finally {
+      setIsSubscribingPush(false);
+    }
+  };
+
+  const handleSendBackgroundPushTest = async (delaySeconds = 0) => {
+    playMinimalClick(soundEnabled);
+    setPushStatusMessage(null);
+
+    if (delaySeconds > 0) {
+      setCountdownTest(delaySeconds);
+      let count = delaySeconds;
+      const timer = setInterval(() => {
+        count -= 1;
+        if (count <= 0) {
+          clearInterval(timer);
+          setCountdownTest(null);
+        } else {
+          setCountdownTest(count);
+        }
+      }, 1000);
+    }
+
+    const res = await sendBackgroundTestPush(delaySeconds, localSettings);
+    if (res.success) {
+      setIsPushSubscribed(true);
+      setPermissionStatus('granted');
+      if (delaySeconds > 0) {
+        setPushStatusMessage(
+          `C'est parti ! Verrouillez votre écran ou fermez le navigateur : notification envoyée dans ${delaySeconds}s.`
+        );
+      } else {
+        setPushStatusMessage('Notification envoyée sur votre appareil !');
+      }
+    } else {
+      setPushStatusMessage(res.message || 'Erreur lors de l’envoi du test');
+    }
   };
 
   const handleSendTestNotification = async () => {
@@ -868,52 +941,84 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
           </div>
         </div>
 
-        {/* Notification permissions status box */}
+        {/* Notification permissions & Web Push status box */}
         <div
-          className={`p-3 rounded-xl border text-xs flex flex-col gap-2 ${
-            permissionStatus === 'granted'
-              ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-400'
-              : permissionStatus === 'denied'
-              ? 'border-red-500/30 bg-red-500/5 text-red-400'
-              : 'border-neutral-800 bg-neutral-900/50 text-neutral-300'
+          className={`p-3 rounded-2xl border text-xs flex flex-col gap-3 ${
+            isLight
+              ? 'bg-neutral-50 border-neutral-200 text-neutral-800'
+              : isEink
+              ? 'bg-neutral-200 border-neutral-600 text-neutral-900'
+              : 'bg-neutral-900/60 border-neutral-800 text-neutral-200'
           }`}
         >
+          {/* Header */}
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              {permissionStatus === 'granted' ? (
-                <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              ) : (
-                <Bell className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-              )}
-              <span className="font-medium text-[11px]">
-                {permissionStatus === 'granted'
-                  ? 'Notifications autorisées sur ce téléphone'
-                  : permissionStatus === 'denied'
-                  ? 'Notifications bloquées dans le navigateur'
-                  : 'Autorisation notification requise'}
-              </span>
+            <div className="flex items-center gap-2">
+              <Radio className="w-4 h-4 text-amber-400" />
+              <span className="font-semibold text-xs">Notifications site fermé (Web Push)</span>
             </div>
-
-            {permissionStatus !== 'granted' && (
-              <button
-                onClick={handleRequestPermission}
-                id="btn-request-notification-permission"
-                className="px-2 py-1 rounded-lg bg-amber-500 text-black font-semibold text-[10px] cursor-pointer hover:bg-amber-400 transition"
-              >
-                Autoriser
-              </button>
-            )}
+            <span
+              className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                isPushSubscribed
+                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                  : 'bg-neutral-800 text-neutral-400 border border-neutral-700'
+              }`}
+            >
+              {isPushSubscribed ? 'Actif en arrière-plan' : 'Local'}
+            </span>
           </div>
+
+          <p className="text-[11px] text-neutral-400 leading-relaxed">
+            Grâce au protocole Web Push et au Service Worker, votre téléphone reçoit vos rappels de couvre-feu
+            même si le navigateur ou l'onglet est <strong className="text-neutral-200">totalement fermé</strong>.
+          </p>
+
+          {/* iOS note */}
+          <div className="p-2 rounded-xl bg-neutral-950/40 border border-neutral-800/80 text-[10.5px] text-neutral-400 leading-relaxed flex items-start gap-2">
+            <Smartphone className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <strong className="text-neutral-300 block font-medium">Sur iPhone (iOS 16.4+) :</strong>
+              Ajoutez l'application à votre écran d'accueil (via le bouton Partager <span className="text-amber-400">« Sur l'écran d'accueil »</span>) pour autoriser les notifications quand Safari est fermé.
+            </div>
+          </div>
+
+          {/* Action to subscribe / link device */}
+          {!isPushSubscribed ? (
+            <button
+              onClick={handleEnablePush}
+              disabled={isSubscribingPush}
+              id="btn-enable-web-push"
+              className="w-full py-2 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-neutral-950 font-semibold text-xs flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-50"
+            >
+              <Zap className="w-3.5 h-3.5 fill-current" />
+              <span>{isSubscribingPush ? 'Activation en cours...' : 'Activer les notifications site fermé'}</span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-2 text-[11px] text-emerald-400 font-medium">
+              <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <span>Votre appareil est synchronisé pour recevoir les alertes hors ligne</span>
+            </div>
+          )}
+
+          {/* Feedback message */}
+          {pushStatusMessage && (
+            <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] flex items-center gap-1.5 animate-in fade-in">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+              <span>{pushStatusMessage}</span>
+            </div>
+          )}
         </div>
 
-        {/* Test Notification Action */}
+        {/* Test Notification Actions */}
         <div className="pt-2 border-t border-neutral-800/40 flex flex-col gap-2">
+          {/* Delayed test button to verify screen locked / closed */}
           <button
-            onClick={handleSendTestNotification}
-            id="btn-test-notification"
+            onClick={() => handleSendBackgroundPushTest(6)}
+            disabled={countdownTest !== null}
+            id="btn-test-locked-screen"
             className={`w-full py-2.5 px-4 rounded-xl text-xs font-medium flex items-center justify-center gap-2 transition-all cursor-pointer ${
-              testSent
-                ? 'bg-emerald-600 text-white'
+              countdownTest !== null
+                ? 'bg-amber-500 text-neutral-950 font-semibold animate-pulse'
                 : isLight
                 ? 'bg-neutral-900 text-white hover:bg-neutral-800'
                 : isEink
@@ -921,17 +1026,27 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
                 : 'bg-neutral-800 text-neutral-100 hover:bg-neutral-700'
             }`}
           >
-            {testSent ? (
+            {countdownTest !== null ? (
               <>
-                <Check className="w-3.5 h-3.5" />
-                <span>Notification envoyée sur votre téléphone !</span>
+                <Lock className="w-3.5 h-3.5 text-neutral-950" />
+                <span>Verrouillez votre écran ! Envoi dans {countdownTest}s...</span>
               </>
             ) : (
               <>
-                <Bell className="w-3.5 h-3.5 text-amber-400" />
-                <span>Tester la notification sur mon téléphone</span>
+                <Lock className="w-3.5 h-3.5 text-amber-400" />
+                <span>Tester écran éteint / site fermé (délai 6s)</span>
               </>
             )}
+          </button>
+
+          {/* Immediate test button */}
+          <button
+            onClick={() => handleSendBackgroundPushTest(0)}
+            id="btn-test-instant"
+            className="w-full py-2 px-3 rounded-xl text-xs text-neutral-400 hover:text-neutral-200 border border-neutral-800/80 hover:border-neutral-700 flex items-center justify-center gap-1.5 transition cursor-pointer"
+          >
+            <Bell className="w-3.5 h-3.5 text-neutral-400" />
+            <span>Tester immédiatement sur ce téléphone</span>
           </button>
 
           <button

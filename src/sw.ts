@@ -1,15 +1,23 @@
-// Service Worker for Minimal Launcher - Mindful Curfew & Web Push Notifications
-self.addEventListener('install', (event) => {
-  self.skipWaiting();
-});
+/// <reference lib="webworker" />
+import { cleanupOutdatedCaches, precacheAndRoute } from 'workbox-precaching';
+import { clientsClaim } from 'workbox-core';
 
-self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
-});
+declare let self: ServiceWorkerGlobalScope;
+
+cleanupOutdatedCaches();
+precacheAndRoute(self.__WB_MANIFEST || []);
+self.skipWaiting();
+clientsClaim();
 
 // PUSH NOTIFICATION LISTENER (Called by browser when phone receives Web Push while closed)
-self.addEventListener('push', (event) => {
-  let data = {
+self.addEventListener('push', (event: PushEvent) => {
+  let data: {
+    title: string;
+    body: string;
+    tag?: string;
+    url?: string;
+    cycleKey?: string;
+  } = {
     title: '🌙 Lâchez votre téléphone',
     body: "Il est l'heure de poser votre téléphone et de reposer votre esprit.",
     tag: 'curfew-disconnect',
@@ -19,14 +27,14 @@ self.addEventListener('push', (event) => {
   if (event.data) {
     try {
       const parsed = event.data.json();
-      data = Object.assign(data, parsed);
-    } catch (e) {
+      data = { ...data, ...parsed };
+    } catch {
       const txt = event.data.text();
       if (txt) data.body = txt;
     }
   }
 
-  const options = {
+  const options: any = {
     body: data.body,
     icon: '/pwa-192x192.png',
     badge: '/pwa-192x192.png',
@@ -56,7 +64,7 @@ self.addEventListener('push', (event) => {
 });
 
 // NOTIFICATION CLICK LISTENER
-self.addEventListener('notificationclick', (event) => {
+self.addEventListener('notificationclick', (event: NotificationEvent) => {
   event.notification.close();
 
   if (event.action === 'confirm_night') {

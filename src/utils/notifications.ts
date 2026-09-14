@@ -39,6 +39,255 @@ export function registerNotificationServiceWorker(): void {
 }
 
 /**
+ * Utility to convert base64 URL safe VAPID key to Uint8Array for PushManager
+ */
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+/**
+ * Retrieves VAPID public key from backend server
+ */
+export async function getVapidPublicKey(): Promise<string | null> {
+  try {
+    const res = await fetch('/api/push/vapid-public-key');
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.publicKey || null;
+  } catch (err) {
+    console.warn('Failed to fetch VAPID public key:', err);
+    return null;
+  }
+}
+
+/**
+ * Checks if current device/browser supports Background Web Push
+ */
+export function isPushNotificationSupported(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    'serviceWorker' in navigator &&
+    'PushManager' in window &&
+    'Notification' in window
+  );
+}
+
+/**
+ * Gets the current active PushSubscription on the client if any
+ */
+export async function getPushSubscription(): Promise<PushSubscription | null> {
+  if (!isPushNotificationSupported()) return null;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    if (!reg.pushManager) return null;
+    return await reg.pushManager.getSubscription();
+  } catch (err) {
+    console.warn('Could not get push subscription:', err);
+    return null;
+  }
+}
+
+/**
+ * Subscribes the device to Web Push notifications to receive reminders even when closed
+ */
+export async function subscribeToWebPush(
+  settings?: DisconnectReminderSettings
+): Promise<{ success: boolean; subscription?: PushSubscription; error?: string }> {
+  if (!isPushNotificationSupported()) {
+    return {
+      success: false,
+      error: 'Les notifications Push ne sont pas prises en charge par ce navigateur.',
+    };
+  }
+
+  try {
+    // 1. Request permission
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      return {
+        success: false,
+        error: 'Autorisation des notifications refusée par le navigateur.',
+      };
+    }
+
+    // 2. Fetch server VAPID key
+    const publicKey = await getVapidPublicKey();
+    if (!publicKey) {
+      return {
+        success: false,
+        error: 'Impossible de contacter le serveur de notifications.',
+      };
+    }
+
+    // 3. Register or get Service Worker
+    const registration = await navigator.serviceWorker.ready;
+    if (!registration.pushManager) {
+      return {
+        success: false,
+        error: 'Le gestionnaire de push du navigateur est indisponible.',
+      };
+    }
+
+    // 4. Check existing or create subscription
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      const convertedVapidKey = urlBase64ToUint8Array(publicKey);
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: convertedVapidKey,
+      });
+    }
+
+    // 5. Sync with server
+    if (subscription) {
+      await syncSubscriptionWithServer(subscription, settings);
+    }
+
+    return { success: true, subscription };
+  } catch (err: any) {
+    console.error('Error subscribing to Web Push:', err);
+    return {
+      success: false,
+      error: err?.message || 'Erreur lors de l’inscription au service Push.',
+    };
+  }
+}
+
+/**
+ * Syncs the current push subscription and curfew schedule with the server
+ */
+export async function syncSubscriptionWithServer(
+  subscription: PushSubscription,
+  settings?: DisconnectReminderSettings
+): Promise<boolean> {
+  try {
+    const timezoneOffset = new Date().getTimezoneOffset();
+    const res = await fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        subscription: subscription.toJSON(),
+        settings: settings
+          ? {
+              enabled: settings.enabled,
+              time: settings.time,
+              weekdayTime: settings.weekdayTime,
+              weekendTime: settings.weekendTime,
+              scheduleMode: settings.scheduleMode,
+              dayTimes: settings.dayTimes,
+              days: settings.days,
+              repeatIntervalMinutes: settings.repeatIntervalMinutes,
+              customMessage: settings.customMessage,
+              timezoneOffset,
+            }
+          : {
+              enabled: true,
+              timezoneOffset,
+            },
+      }),
+    });
+    return res.ok;
+  } catch (err) {
+    console.warn('Failed to sync push subscription with server:', err);
+    return false;
+  }
+}
+
+/**
+ * Unsubscribes from Web Push
+ */
+export async function unsubscribeFromWebPush(): Promise<boolean> {
+  try {
+    const subscription = await getPushSubscription();
+    if (subscription) {
+      await fetch('/api/push/unsubscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subscription: subscription.toJSON() }),
+      }).catch(() => {});
+      await subscription.unsubscribe();
+    }
+    return true;
+  } catch (err) {
+    console.warn('Failed to unsubscribe from push:', err);
+    return false;
+  }
+}
+
+/**
+ * Triggers a real background test push via the server.
+ * Can include a delay (e.g. 5-10s) so the user can lock their phone screen or close the tab!
+ */
+export async function sendBackgroundTestPush(
+  delaySeconds = 0,
+  settings?: DisconnectReminderSettings
+): Promise<{ success: boolean; message?: string }> {
+  try {
+    let sub = await getPushSubscription();
+    if (!sub) {
+      const subscribeResult = await subscribeToWebPush(settings);
+      if (!subscribeResult.success || !subscribeResult.subscription) {
+        return {
+          success: false,
+          message: subscribeResult.error || 'Impossible d’activer les notifications Push.',
+        };
+      }
+      sub = subscribeResult.subscription;
+    }
+
+    const res = await fetch('/api/push/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        subscription: sub.toJSON(),
+        delaySeconds,
+        message:
+          delaySeconds > 0
+            ? `🌙 Test réussi ! Notification reçue avec le téléphone verrouillé ou l'écran éteint.`
+            : `🌙 Test réussi ! Les notifications d'arrière-plan fonctionnent sur votre téléphone même site fermé.`,
+      }),
+    });
+
+    const data = await res.json();
+    return { success: Boolean(data.success), message: data.message };
+  } catch (err: any) {
+    console.error('Failed to trigger background test push:', err);
+    return {
+      success: false,
+      message: err?.message || 'Erreur lors de l’envoi du test de notification.',
+    };
+  }
+}
+
+/**
+ * Informs server that user confirmed stopping phone usage for the night
+ */
+export async function confirmNightShutdownOnServer(cycleKey?: string): Promise<boolean> {
+  try {
+    const sub = await getPushSubscription();
+    const res = await fetch('/api/push/confirm-night', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        subscription: sub ? sub.toJSON() : undefined,
+        cycleKey,
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+
+/**
  * Checks if browser notifications are supported and returns status
  */
 export function getNotificationPermissionStatus(): NotificationPermission | 'unsupported' {

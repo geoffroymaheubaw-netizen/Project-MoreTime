@@ -26,7 +26,6 @@ import { SettingsModal } from './components/SettingsModal';
 import { PWAInstallBanner } from './components/PWAInstallBanner';
 import { FocusSetupModal } from './components/FocusSetupModal';
 import { FocusModeScreen } from './components/FocusModeScreen';
-import { MindfulYouTubeScreen } from './components/MindfulYouTubeScreen';
 import { DisconnectReminderModal } from './components/DisconnectReminderModal';
 import { CurfewAlertModal } from './components/CurfewAlertModal';
 import {
@@ -35,6 +34,9 @@ import {
   getScheduledTimeForToday,
   getCurfewCycleKey,
   getCurfewWindowStatus,
+  confirmNightShutdownOnServer,
+  getPushSubscription,
+  syncSubscriptionWithServer,
 } from './utils/notifications';
 import { playBedtimeChime, triggerBedtimeHaptic } from './utils/audio';
 import { Smartphone, Monitor, Moon, Power, ShieldCheck } from 'lucide-react';
@@ -42,7 +44,7 @@ import { Smartphone, Monitor, Moon, Power, ShieldCheck } from 'lucide-react';
 export default function App() {
   const [stats, setStats] = useState<UserStats>(loadStats);
   const [preferences, setPreferences] = useState<UserPreferences>(loadPreferences);
-  const [currentView, setCurrentView] = useState<'home' | 'streak' | 'mindful-youtube'>('home');
+  const [currentView, setCurrentView] = useState<'home' | 'streak'>('home');
   const [pendingApp, setPendingApp] = useState<AppLauncherItem | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isFocusSetupOpen, setIsFocusSetupOpen] = useState(false);
@@ -210,6 +212,9 @@ export default function App() {
     setSnoozeUntil(null);
     playBedtimeChime(preferences.soundEnabled);
     triggerBedtimeHaptic(true);
+
+    // Also notify server push scheduler that user stopped for the night
+    confirmNightShutdownOnServer(cycleKey);
   };
 
   const handleCancelCurfewConfirmation = () => {
@@ -225,6 +230,9 @@ export default function App() {
     } catch {
       // ignore
     }
+
+    // Reset server night shutdown
+    confirmNightShutdownOnServer(undefined);
   };
 
   const handleSnoozeCurfew = (minutes?: number) => {
@@ -256,7 +264,23 @@ export default function App() {
     }
     setPreferences(newPrefs);
     savePreferences(newPrefs);
+
+    // Keep server push scheduler updated with new times/settings
+    getPushSubscription().then((sub) => {
+      if (sub) {
+        syncSubscriptionWithServer(sub, nextReminder);
+      }
+    });
   };
+
+  // Sync push settings on initial mount
+  useEffect(() => {
+    getPushSubscription().then((sub) => {
+      if (sub) {
+        syncSubscriptionWithServer(sub, preferences.disconnectReminder);
+      }
+    });
+  }, []);
 
   const curfewStatus = getCurfewWindowStatus(preferences.disconnectReminder);
   const isCurfewWindowActive = curfewStatus.isWindowActive;
@@ -272,11 +296,6 @@ export default function App() {
   const handleSelectApp = (app: AppLauncherItem) => {
     playMinimalClick(preferences.soundEnabled);
     triggerHaptic(preferences.hapticsEnabled);
-
-    if (app.id === 'youtube-mindful') {
-      setCurrentView('mindful-youtube');
-      return;
-    }
 
     if (preferences.intentionalPause) {
       setPendingApp(app);
@@ -520,7 +539,7 @@ export default function App() {
                 isCurfewConfirmed={isCurfewConfirmedForNight}
               />
 
-              {/* Central App Launcher Grid (The apps + YouTube Sobre + Focus button + Streak button) */}
+              {/* Central App Launcher Grid (The apps + Focus button + Streak button) */}
               <AppGrid
                 onSelectApp={handleSelectApp}
                 onOpenStreakPage={() => {
@@ -530,10 +549,6 @@ export default function App() {
                 onOpenFocusSetup={() => {
                   playMinimalClick(preferences.soundEnabled);
                   setIsFocusSetupOpen(true);
-                }}
-                onOpenMindfulYoutube={() => {
-                  playMinimalClick(preferences.soundEnabled);
-                  setCurrentView('mindful-youtube');
                 }}
                 theme={preferences.theme}
                 currentStreak={stats.currentStreak}
@@ -547,16 +562,6 @@ export default function App() {
                 </div>
               </footer>
             </div>
-          ) : currentView === 'mindful-youtube' ? (
-            /* Modified Distraction-Free Real YouTube Player & Search */
-            <MindfulYouTubeScreen
-              onBack={() => {
-                playMinimalClick(preferences.soundEnabled);
-                setCurrentView('home');
-              }}
-              theme={preferences.theme}
-              soundEnabled={preferences.soundEnabled}
-            />
           ) : (
             /* Dedicated Screen Time Reduction Streak & Days Page */
             <StreakPage

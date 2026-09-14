@@ -53,6 +53,13 @@ export function getPrimaryDeepLink(app: AppLauncherItem): string | undefined {
     return 'chatgpt://';
   }
 
+  if (app.id === 'zentube') {
+    if (platform === 'android') {
+      return 'intent://zentube.app/#Intent;scheme=https;package=com.intenca.zentube;S.browser_fallback_url=https%3A%2F%2Fzentube.app%2F;end';
+    }
+    return 'zentube://';
+  }
+
   return app.deepLink;
 }
 

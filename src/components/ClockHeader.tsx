@@ -15,6 +15,14 @@ interface ClockHeaderProps {
   isCurfewConfirmed?: boolean;
 }
 
+// Calcule l'indice de la citation quotidienne de manière déterministe pour chaque jour de l'année
+export const getDailyQuoteIndex = (date: Date = new Date()): number => {
+  const startOfYear = new Date(date.getFullYear(), 0, 1);
+  const dayOfYear = Math.floor((date.getTime() - startOfYear.getTime()) / (1000 * 60 * 60 * 24));
+  const dailyOffset = (dayOfYear + date.getFullYear()) % MINDFUL_QUOTES.length;
+  return Math.abs(dailyOffset);
+};
+
 export const ClockHeader: React.FC<ClockHeaderProps> = ({
   currentStreak,
   totalDays,
@@ -27,7 +35,8 @@ export const ClockHeader: React.FC<ClockHeaderProps> = ({
 }) => {
   const [time, setTime] = useState({ hours: '12', minutes: '00', seconds: '00' });
   const [dateStr, setDateStr] = useState('');
-  const [quoteIndex, setQuoteIndex] = useState(0);
+  const [quoteIndex, setQuoteIndex] = useState(() => getDailyQuoteIndex(new Date()));
+  const lastDayRef = React.useRef(new Date().toDateString());
 
   useEffect(() => {
     const updateTime = () => {
@@ -45,6 +54,13 @@ export const ClockHeader: React.FC<ClockHeaderProps> = ({
       });
       // Capitalize first letter
       setDateStr(formatted.charAt(0).toUpperCase() + formatted.slice(1));
+
+      // Vérifie si le jour a changé (passage de minuit ou reprise) pour actualiser la citation
+      const todayKey = now.toDateString();
+      if (todayKey !== lastDayRef.current) {
+        lastDayRef.current = todayKey;
+        setQuoteIndex(getDailyQuoteIndex(now));
+      }
     };
 
     updateTime();
@@ -167,7 +183,9 @@ export const ClockHeader: React.FC<ClockHeaderProps> = ({
       <button
         onClick={cycleQuote}
         id="btn-quote-cycle"
-        className={`mt-4 px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-1.5 max-w-xs text-center border ${
+        title="Citation du jour (change automatiquement chaque jour, touchez pour en découvrir d'autres)"
+        aria-label="Citation du jour"
+        className={`mt-4 px-3.5 py-2 rounded-xl text-xs transition-colors flex items-center justify-center gap-2 max-w-full text-center border cursor-pointer ${
           isLight
             ? 'bg-neutral-50 border-neutral-200 text-neutral-600 hover:bg-neutral-100'
             : isEink
@@ -175,8 +193,8 @@ export const ClockHeader: React.FC<ClockHeaderProps> = ({
             : 'bg-neutral-900/60 border-neutral-800/80 text-neutral-400 hover:text-neutral-300 hover:bg-neutral-900'
         }`}
       >
-        <Sparkles className="w-3 h-3 shrink-0 opacity-70" />
-        <span className="italic truncate">{MINDFUL_QUOTES[quoteIndex]}</span>
+        <Sparkles className="w-3.5 h-3.5 shrink-0 opacity-70" />
+        <span className="italic leading-relaxed">{MINDFUL_QUOTES[quoteIndex]}</span>
       </button>
     </header>
   );
