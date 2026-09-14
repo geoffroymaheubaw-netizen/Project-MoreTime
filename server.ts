@@ -329,6 +329,17 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
+  // Enable CORS for API routes so requests from iframes, previews, or PWA origins never get blocked
+  app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(200);
+    }
+    next();
+  });
+
   // 1. Return VAPID Public Key for client subscription
   app.get('/api/push/vapid-public-key', (req, res) => {
     res.json({

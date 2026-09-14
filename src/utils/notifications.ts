@@ -53,18 +53,33 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
 }
 
 /**
- * Retrieves VAPID public key from backend server
+ * VAPID public key corresponding to server-side keys
  */
-export async function getVapidPublicKey(): Promise<string | null> {
+export const APP_VAPID_PUBLIC_KEY =
+  'BPOkMYX6lXv6RCyYE4vAyOm9oBA9JWsJV112pV2jWEgt85vdntBtKPZNMpwhtl_BlIdOGnJIjrPLDSwWraoacPs';
+
+/**
+ * Retrieves VAPID public key from backend server with instant fallback to application key
+ */
+export async function getVapidPublicKey(): Promise<string> {
   try {
-    const res = await fetch('/api/push/vapid-public-key');
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.publicKey || null;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2500);
+    const res = await fetch('/api/push/vapid-public-key', {
+      signal: controller.signal,
+      headers: { Accept: 'application/json' },
+    });
+    clearTimeout(timeout);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && typeof data.publicKey === 'string' && data.publicKey.length > 20) {
+        return data.publicKey;
+      }
+    }
   } catch (err) {
-    console.warn('Failed to fetch VAPID public key:', err);
-    return null;
+    console.warn('Network query for VAPID key completed with warning, using embedded application key:', err);
   }
+  return APP_VAPID_PUBLIC_KEY;
 }
 
 /**
@@ -174,22 +189,32 @@ export async function subscribeToWebPush(
       };
     }
 
-    // 2. Fetch server VAPID key
+    // 2. Fetch server VAPID key (with robust fallback)
     const publicKey = await getVapidPublicKey();
-    if (!publicKey) {
-      return {
-        success: false,
-        error: 'Impossible de contacter le serveur de notifications.',
-      };
-    }
 
     // 3. Register or get Service Worker
     let registration: ServiceWorkerRegistration;
     try {
-      registration = await navigator.serviceWorker.ready;
+      if ('serviceWorker' in navigator) {
+        const existing = await navigator.serviceWorker.getRegistration();
+        if (existing && existing.active) {
+          registration = existing;
+        } else {
+          registration = await navigator.serviceWorker.register('/sw.js');
+          const readyPromise = navigator.serviceWorker.ready;
+          const timeoutPromise = new Promise<ServiceWorkerRegistration>((resolve) =>
+            setTimeout(() => resolve(registration), 3000)
+          );
+          registration = await Promise.race([readyPromise, timeoutPromise]);
+        }
+      } else {
+        return {
+          success: false,
+          error: 'Le navigateur ne prend pas en charge les Service Workers.',
+        };
+      }
     } catch {
-      registration = await navigator.serviceWorker.register('/sw.js');
-      await navigator.serviceWorker.ready;
+      registration = await navigator.serviceWorker.ready;
     }
 
     if (!registration || !registration.pushManager) {
@@ -239,9 +264,20 @@ export async function subscribeToWebPush(
     return { success: true, subscription };
   } catch (err: any) {
     console.error('Error subscribing to Web Push:', err);
+    let msg = err?.message || 'Erreur lors de l’inscription au service Push.';
+    const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
+    if (
+      isInIframe &&
+      (msg.toLowerCase().includes('permission') ||
+        msg.toLowerCase().includes('denied') ||
+        msg.toLowerCase().includes('not allowed') ||
+        msg.toLowerCase().includes('pushmanager'))
+    ) {
+      msg = "Les notifications sont restreintes dans l'aperçu intégré. Ouvrez l'application dans un nouvel onglet ou sur votre téléphone pour les activer.";
+    }
     return {
       success: false,
-      error: err?.message || 'Erreur lors de l’inscription au service Push.',
+      error: msg,
     };
   }
 }
@@ -253,37 +289,46 @@ export async function syncSubscriptionWithServer(
   subscription: PushSubscription,
   settings?: DisconnectReminderSettings
 ): Promise<boolean> {
-  try {
-    const timezoneOffset = new Date().getTimezoneOffset();
-    const res = await fetch('/api/push/subscribe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        subscription: subscription.toJSON(),
-        settings: settings
-          ? {
-              enabled: settings.enabled,
-              time: settings.time,
-              weekdayTime: settings.weekdayTime,
-              weekendTime: settings.weekendTime,
-              scheduleMode: settings.scheduleMode,
-              dayTimes: settings.dayTimes,
-              days: settings.days,
-              repeatIntervalMinutes: settings.repeatIntervalMinutes,
-              customMessage: settings.customMessage,
-              timezoneOffset,
-            }
-          : {
-              enabled: true,
-              timezoneOffset,
-            },
-      }),
-    });
-    return res.ok;
-  } catch (err) {
-    console.warn('Failed to sync push subscription with server:', err);
-    return false;
+  const timezoneOffset = new Date().getTimezoneOffset();
+  const payload = JSON.stringify({
+    subscription: subscription.toJSON(),
+    settings: settings
+      ? {
+          enabled: settings.enabled,
+          time: settings.time,
+          weekdayTime: settings.weekdayTime,
+          weekendTime: settings.weekendTime,
+          scheduleMode: settings.scheduleMode,
+          dayTimes: settings.dayTimes,
+          days: settings.days,
+          repeatIntervalMinutes: settings.repeatIntervalMinutes,
+          customMessage: settings.customMessage,
+          timezoneOffset,
+        }
+      : {
+          enabled: true,
+          timezoneOffset,
+        },
+  });
+
+  // Attempt up to 2 times with a slight delay
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch('/api/push/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      });
+      if (res.ok) return true;
+    } catch (err) {
+      if (attempt === 2) {
+        console.warn('Failed to sync push subscription with server after retries:', err);
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
   }
+  return false;
 }
 
 /**
