@@ -12,6 +12,7 @@ interface CurfewAlertModalProps {
   onSnooze: (minutes: number) => void;
   theme: ThemeMode;
   soundEnabled: boolean;
+  repeatIntervalMinutes?: number;
 }
 
 export const CurfewAlertModal: React.FC<CurfewAlertModalProps> = ({
@@ -23,6 +24,7 @@ export const CurfewAlertModal: React.FC<CurfewAlertModalProps> = ({
   onSnooze,
   theme,
   soundEnabled,
+  repeatIntervalMinutes = 10,
 }) => {
   if (!isOpen) return null;
 
@@ -37,7 +39,7 @@ export const CurfewAlertModal: React.FC<CurfewAlertModalProps> = ({
 
   const handleSnooze = () => {
     playMinimalClick(soundEnabled);
-    onSnooze(15);
+    onSnooze(repeatIntervalMinutes);
   };
 
   return (
@@ -129,7 +131,7 @@ export const CurfewAlertModal: React.FC<CurfewAlertModalProps> = ({
             }`}
           >
             <Clock className="w-3.5 h-3.5" />
-            <span>Reporter de 15 minutes</span>
+            <span>Reporter de {repeatIntervalMinutes} minutes</span>
           </button>
         </div>
       </div>

@@ -63,9 +63,17 @@ export default function App() {
       return null;
     }
   });
-  const [lastTriggerMinute, setLastTriggerMinute] = useState<string | null>(() => {
+  const [lastTriggerTimestamp, setLastTriggerTimestamp] = useState<number | null>(() => {
     try {
-      return localStorage.getItem('minimal_launcher_last_curfew_trigger');
+      const stored = localStorage.getItem('minimal_launcher_last_trigger_timestamp');
+      return stored ? Number(stored) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [lastTriggerCycle, setLastTriggerCycle] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('minimal_launcher_last_trigger_cycle');
     } catch {
       return null;
     }
@@ -91,7 +99,7 @@ export default function App() {
     }
   }, [preferences.theme]);
 
-  // Periodic checker for the user's disconnect curfew
+  // Periodic checker for the user's disconnect curfew & repeated notifications
   useEffect(() => {
     const checkCurfew = () => {
       if (!preferences.disconnectReminder || !preferences.disconnectReminder.enabled) {
@@ -105,21 +113,27 @@ export default function App() {
 
       const evaluation = evaluateDisconnectTrigger(
         preferences.disconnectReminder,
-        lastTriggerMinute,
+        lastTriggerTimestamp,
+        lastTriggerCycle,
         curfewConfirmedCycle
       );
 
       if (evaluation.shouldTrigger) {
-        setLastTriggerMinute(evaluation.minuteKey);
+        const nowTs = evaluation.triggerTimestamp;
+        setLastTriggerTimestamp(nowTs);
+        setLastTriggerCycle(evaluation.cycleKey);
         try {
-          localStorage.setItem('minimal_launcher_last_curfew_trigger', evaluation.minuteKey);
+          localStorage.setItem('minimal_launcher_last_trigger_timestamp', String(nowTs));
+          localStorage.setItem('minimal_launcher_last_trigger_cycle', evaluation.cycleKey);
         } catch {
           // ignore
         }
 
         let alertMessage = preferences.disconnectReminder.customMessage;
         if (evaluation.reason === 'repeat_interval' && evaluation.minutesElapsed) {
-          alertMessage = `Rappel (+${evaluation.minutesElapsed}m) : Il est l'heure de lâcher votre téléphone. Rendez-vous sur le site et appuyez sur "J'arrête d'utiliser mon téléphone" pour couper les rappels.`;
+          alertMessage = `Rappel (+${evaluation.minutesElapsed}m) : Il est l'heure de lâcher votre téléphone. Rendez-vous sur le site et appuyez sur « J'arrête d'utiliser mon téléphone » pour couper les rappels.`;
+        } else if (evaluation.reason === 'time_passed' && evaluation.minutesElapsed && evaluation.minutesElapsed > 0) {
+          alertMessage = `L'heure limite (${evaluation.scheduledTime}) est passée depuis ${evaluation.minutesElapsed} min. Posez votre téléphone et préservez votre soirée.`;
         }
 
         // Trigger phone notification, soothing chime and haptics
@@ -134,12 +148,46 @@ export default function App() {
       }
     };
 
+    // Run check immediately on mount or state change
     checkCurfew();
-    const interval = setInterval(checkCurfew, 20000); // checks every 20s
-    return () => clearInterval(interval);
+
+    // Check every 5 seconds so minute transitions and interval boundaries trigger promptly
+    const interval = setInterval(checkCurfew, 5000);
+
+    // Also trigger check immediately when tab gains focus or becomes visible
+    const handleVisibilityOrFocus = () => {
+      checkCurfew();
+    };
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+
+    // Optional background worker to avoid aggressive background tab throttling
+    let worker: Worker | null = null;
+    try {
+      const blob = new Blob(
+        [`setInterval(() => { self.postMessage('tick'); }, 5000);`],
+        { type: 'application/javascript' }
+      );
+      worker = new Worker(URL.createObjectURL(blob));
+      worker.onmessage = () => {
+        checkCurfew();
+      };
+    } catch {
+      // Inline worker unavailable
+    }
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      if (worker) {
+        worker.terminate();
+      }
+    };
   }, [
     preferences.disconnectReminder,
-    lastTriggerMinute,
+    lastTriggerTimestamp,
+    lastTriggerCycle,
     curfewConfirmedCycle,
     snoozeUntil,
     preferences.soundEnabled,
@@ -147,7 +195,8 @@ export default function App() {
   ]);
 
   const handleConfirmStopUsingPhone = () => {
-    const cycleKey = getCurfewCycleKey();
+    const todaySched = getScheduledTimeForToday(preferences.disconnectReminder);
+    const cycleKey = getCurfewCycleKey(new Date(), todaySched.time);
     const timeNow = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
     setCurfewConfirmedCycle(cycleKey);
     setCurfewConfirmedTime(timeNow);
@@ -166,20 +215,45 @@ export default function App() {
   const handleCancelCurfewConfirmation = () => {
     setCurfewConfirmedCycle(null);
     setCurfewConfirmedTime(null);
+    setLastTriggerTimestamp(null);
+    setLastTriggerCycle(null);
     try {
       localStorage.removeItem('minimal_launcher_curfew_confirmed_cycle');
       localStorage.removeItem('minimal_launcher_curfew_confirmed_time');
+      localStorage.removeItem('minimal_launcher_last_trigger_timestamp');
+      localStorage.removeItem('minimal_launcher_last_trigger_cycle');
     } catch {
       // ignore
     }
   };
 
-  const handleSnoozeCurfew = (minutes = 15) => {
-    setSnoozeUntil(Date.now() + minutes * 60 * 1000);
+  const handleSnoozeCurfew = (minutes?: number) => {
+    const snoozeMin = minutes || preferences.disconnectReminder.repeatIntervalMinutes || 10;
+    setSnoozeUntil(Date.now() + snoozeMin * 60 * 1000);
     setCurfewAlertActive(false);
   };
 
   const handleUpdatePreferences = (newPrefs: UserPreferences) => {
+    // If schedule or times changed, reset the last trigger tracker so newly configured times trigger immediately
+    const prevReminder = preferences.disconnectReminder;
+    const nextReminder = newPrefs.disconnectReminder;
+    if (
+      prevReminder.time !== nextReminder.time ||
+      prevReminder.weekdayTime !== nextReminder.weekdayTime ||
+      prevReminder.weekendTime !== nextReminder.weekendTime ||
+      prevReminder.scheduleMode !== nextReminder.scheduleMode ||
+      prevReminder.repeatIntervalMinutes !== nextReminder.repeatIntervalMinutes ||
+      prevReminder.enabled !== nextReminder.enabled
+    ) {
+      setLastTriggerTimestamp(null);
+      setLastTriggerCycle(null);
+      try {
+        localStorage.removeItem('minimal_launcher_last_trigger_timestamp');
+        localStorage.removeItem('minimal_launcher_last_trigger_cycle');
+      } catch {
+        // ignore
+      }
+    }
     setPreferences(newPrefs);
     savePreferences(newPrefs);
   };
@@ -545,6 +619,7 @@ export default function App() {
           onSnooze={handleSnoozeCurfew}
           theme={preferences.theme}
           soundEnabled={preferences.soundEnabled}
+          repeatIntervalMinutes={preferences.disconnectReminder.repeatIntervalMinutes || 10}
         />
       </div>
     </main>

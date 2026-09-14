@@ -19,6 +19,26 @@ export const DISCONNECT_MESSAGES = [
 ];
 
 /**
+ * Registers the lightweight Service Worker for mobile/PWA notification delivery
+ */
+export function registerNotificationServiceWorker(): void {
+  if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+    try {
+      navigator.serviceWorker
+        .register('/sw.js')
+        .then((reg) => {
+          console.log('Notification Service Worker active:', reg.scope);
+        })
+        .catch((err) => {
+          console.warn('Service Worker registration skipped:', err);
+        });
+    } catch {
+      // ignore
+    }
+  }
+}
+
+/**
  * Checks if browser notifications are supported and returns status
  */
 export function getNotificationPermissionStatus(): NotificationPermission | 'unsupported' {
@@ -74,23 +94,30 @@ export async function sendPhoneNotification(
       renotify: true,
       requireInteraction: true,
       silent: false,
-    } as NotificationOptions;
+      vibrate: options.vibrate || [250, 150, 250, 150, 350],
+    };
 
-    // Prefer Service Worker registration on mobile if available
+    // 1. Try via active Service Worker with a 400ms timeout race (never hangs)
     if ('serviceWorker' in navigator) {
       try {
-        const registration = await navigator.serviceWorker.ready;
+        const swPromise = navigator.serviceWorker.getRegistration();
+        const timeoutPromise = new Promise<null>((res) => setTimeout(() => res(null), 400));
+        const registration = await Promise.race([swPromise, timeoutPromise]);
         if (registration && 'showNotification' in registration) {
-          await registration.showNotification(title, notificationOptions);
+          await registration.showNotification(title, notificationOptions as NotificationOptions);
           return true;
         }
-      } catch (swError) {
-        // Fallback to standard Notification constructor
+      } catch (swErr) {
+        console.warn('SW notification fallback to standard Notification:', swErr);
       }
     }
 
-    // Standard constructor fallback
-    new Notification(title, notificationOptions);
+    // 2. Standard Notification constructor fallback
+    const notif = new Notification(title, notificationOptions as NotificationOptions);
+    notif.onclick = () => {
+      window.focus();
+      notif.close();
+    };
     return true;
   } catch (err) {
     console.warn('Could not display system notification:', err);
@@ -172,12 +199,14 @@ export function getScheduledTimeForToday(
 }
 
 /**
- * Computes the unique date key for the evening/night curfew cycle (YYYY-MM-DD).
- * Any time between 00:00 and 04:59 AM belongs to the cycle started the previous evening.
+ * Computes the unique cycle date key for the curfew session (YYYY-MM-DD).
+ * If the curfew is an evening schedule (>= 12:00) and current time is past midnight (< 06:00 AM),
+ * it correctly belongs to yesterday evening's cycle.
  */
-export function getCurfewCycleKey(date: Date = new Date()): string {
+export function getCurfewCycleKey(date: Date = new Date(), targetTimeStr?: string): string {
   const d = new Date(date);
-  if (d.getHours() < 5) {
+  const [targetH] = (targetTimeStr || '21:30').split(':').map(Number);
+  if (targetH >= 12 && d.getHours() < 6) {
     d.setDate(d.getDate() - 1);
   }
   const year = d.getFullYear();
@@ -187,7 +216,9 @@ export function getCurfewCycleKey(date: Date = new Date()): string {
 }
 
 /**
- * Checks whether the current time falls into the active evening curfew window.
+ * Checks whether the current time falls into the active curfew window.
+ * The window is considered active as soon as the scheduled time is reached or has passed,
+ * and remains active for up to 10 hours or until morning, unless confirmed stopped by user.
  */
 export function getCurfewWindowStatus(
   settings: DisconnectReminderSettings,
@@ -198,118 +229,163 @@ export function getCurfewWindowStatus(
   targetTimeStr: string;
   minutesElapsed: number;
 } {
-  const cycleKey = getCurfewCycleKey(now);
-  if (!settings.enabled) {
-    return { isWindowActive: false, cycleKey, targetTimeStr: '21:30', minutesElapsed: 0 };
+  const todayIndex = now.getDay();
+  const todaySchedule = getScheduledTimeForDay(settings, todayIndex);
+  const currentHour = now.getHours();
+
+  // 1. Check if we are in early morning (< 06:00) continuation of yesterday's evening curfew
+  if (currentHour < 6) {
+    const yesterdayIndex = (todayIndex + 6) % 7;
+    const yesterdaySchedule = getScheduledTimeForDay(settings, yesterdayIndex);
+    if (yesterdaySchedule.enabled) {
+      const [yH, yM] = yesterdaySchedule.time.split(':').map(Number);
+      if (yH >= 12) {
+        const yDate = new Date(now);
+        yDate.setDate(yDate.getDate() - 1);
+        yDate.setHours(yH, yM, 0, 0);
+
+        const diffYMs = now.getTime() - yDate.getTime();
+        const yMinutesElapsed = Math.floor(diffYMs / 60000);
+        // Active from yesterday evening until 06:00 AM next morning (max 10 hours)
+        if (diffYMs >= 0 && diffYMs <= 10 * 3600 * 1000) {
+          const cycleKey = getCurfewCycleKey(now, yesterdaySchedule.time);
+          return {
+            isWindowActive: settings.enabled,
+            cycleKey,
+            targetTimeStr: yesterdaySchedule.time,
+            minutesElapsed: yMinutesElapsed,
+          };
+        }
+      }
+    }
   }
 
-  // Day of week when the cycle started
-  const cycleDate = new Date(now);
-  if (now.getHours() < 5) {
-    cycleDate.setDate(cycleDate.getDate() - 1);
+  // 2. Today's schedule
+  const cycleKey = getCurfewCycleKey(now, todaySchedule.time);
+  if (!settings.enabled || !todaySchedule.enabled) {
+    return {
+      isWindowActive: false,
+      cycleKey,
+      targetTimeStr: todaySchedule.time,
+      minutesElapsed: 0,
+    };
   }
-  const cycleDayIndex = cycleDate.getDay();
-  const schedule = getScheduledTimeForDay(settings, cycleDayIndex);
 
-  if (!schedule.enabled) {
-    return { isWindowActive: false, cycleKey, targetTimeStr: schedule.time, minutesElapsed: 0 };
-  }
+  const [tH, tM] = todaySchedule.time.split(':').map(Number);
+  const targetDate = new Date(now);
+  targetDate.setHours(tH, tM, 0, 0);
 
-  const [targetH, targetM] = schedule.time.split(':').map(Number);
-  const curfewDate = new Date(cycleDate);
-  curfewDate.setHours(targetH, targetM, 0, 0);
-
-  const diffMs = now.getTime() - curfewDate.getTime();
+  const diffMs = now.getTime() - targetDate.getTime();
   const minutesElapsed = Math.floor(diffMs / 60000);
 
-  // Active from scheduled time until 05:00 AM next morning (max 8 hours)
-  const isAfterCurfew = now.getTime() >= curfewDate.getTime();
-  const isBeforeMorning = now.getHours() >= targetH || now.getHours() < 5;
-  const isWindowActive = isAfterCurfew && isBeforeMorning && minutesElapsed >= 0 && minutesElapsed <= 480;
+  // Active as soon as the scheduled time is reached/passed (diffMs >= 0)
+  // and stays active for up to 10 hours unless confirmed stopped by user.
+  const isAfterScheduledTime = diffMs >= 0;
+  const isWithinActiveWindow = isAfterScheduledTime && diffMs <= 10 * 3600 * 1000;
 
   return {
-    isWindowActive,
+    isWindowActive: isWithinActiveWindow,
     cycleKey,
-    targetTimeStr: schedule.time,
-    minutesElapsed,
+    targetTimeStr: todaySchedule.time,
+    minutesElapsed: Math.max(0, minutesElapsed),
   };
 }
 
+export interface DisconnectEvaluation {
+  shouldTrigger: boolean;
+  cycleKey: string;
+  reason?: 'exact_time' | 'time_passed' | 'repeat_interval';
+  scheduledTime?: string;
+  minutesElapsed?: number;
+  intervalMinutes: number;
+  triggerTimestamp: number;
+  isConfirmedForNight?: boolean;
+}
+
 /**
- * Evaluates whether the disconnect reminder should trigger at this moment.
- * Keeps repeating until the user goes to the site and confirms they stopped using the phone!
+ * Evaluates whether the disconnect reminder should trigger at this moment:
+ * 1. If the scheduled time has arrived or is already passed, and no notification has been
+ *    sent yet for this cycle -> TRIGGERS IMMEDIATELY.
+ * 2. If an initial notification was already sent, it repeats every X minutes (e.g. 5 min, 30 min)
+ *    based on elapsed time from lastTriggerTimestamp until the user confirms on the site.
  */
 export function evaluateDisconnectTrigger(
   settings: DisconnectReminderSettings,
-  lastTriggerKey: string | null,
-  confirmedCycleKey: string | null
-): {
-  shouldTrigger: boolean;
-  minuteKey: string;
-  reason?: string;
-  scheduledTime?: string;
-  minutesElapsed?: number;
-  isConfirmedForNight?: boolean;
-} {
-  const now = new Date();
-  const currentHH = String(now.getHours()).padStart(2, '0');
-  const currentMM = String(now.getMinutes()).padStart(2, '0');
-  const currentTimeStr = `${currentHH}:${currentMM}`;
-  const minuteKey = `${now.toISOString().split('T')[0]}_${currentTimeStr}`;
-
-  if (!settings.enabled) {
-    return { shouldTrigger: false, minuteKey };
-  }
-
+  lastTriggerTimestamp: number | null,
+  lastTriggerCycle: string | null,
+  confirmedCycleKey: string | null,
+  now: Date = new Date()
+): DisconnectEvaluation {
   const windowStatus = getCurfewWindowStatus(settings, now);
+  const cycleKey = windowStatus.cycleKey;
+  const intervalMinutes =
+    settings.repeatIntervalMinutes && settings.repeatIntervalMinutes > 0
+      ? settings.repeatIntervalMinutes
+      : 10;
 
-  if (!windowStatus.isWindowActive) {
-    return { shouldTrigger: false, minuteKey };
+  if (!settings.enabled || !windowStatus.isWindowActive) {
+    return {
+      shouldTrigger: false,
+      cycleKey,
+      intervalMinutes,
+      triggerTimestamp: now.getTime(),
+    };
   }
 
   // IF THE USER ALREADY PRESSED THE BUTTON ON THE SITE TO CONFIRM PHONE SHUTDOWN:
-  // STOP SENDING ALL NOTIFICATIONS FOR THIS NIGHT!
-  if (confirmedCycleKey === windowStatus.cycleKey) {
+  // STOP SENDING ALL NOTIFICATIONS FOR THIS CYCLE!
+  if (confirmedCycleKey === cycleKey) {
     return {
       shouldTrigger: false,
-      minuteKey,
+      cycleKey,
+      intervalMinutes,
+      triggerTimestamp: now.getTime(),
       isConfirmedForNight: true,
       scheduledTime: windowStatus.targetTimeStr,
     };
   }
 
-  // Already triggered in this exact minute
-  if (lastTriggerKey === minuteKey) {
-    return { shouldTrigger: false, minuteKey };
-  }
+  const hasTriggeredInCurrentCycle =
+    lastTriggerCycle === cycleKey &&
+    lastTriggerTimestamp !== null &&
+    lastTriggerTimestamp > 0;
 
-  // Determine repeat interval in minutes (defaults to 10 minutes if 0, so reminders don't stop until confirmed)
-  const interval =
-    settings.repeatIntervalMinutes && settings.repeatIntervalMinutes > 0
-      ? settings.repeatIntervalMinutes
-      : 10;
-
-  // Exact curfew start minute
-  if (windowStatus.minutesElapsed === 0) {
+  // Case 1: Initial trigger when scheduled time has arrived or is passed
+  if (!hasTriggeredInCurrentCycle) {
+    const reason = windowStatus.minutesElapsed === 0 ? 'exact_time' : 'time_passed';
     return {
       shouldTrigger: true,
-      minuteKey,
-      reason: 'exact_time',
+      cycleKey,
+      reason,
       scheduledTime: windowStatus.targetTimeStr,
-      minutesElapsed: 0,
+      minutesElapsed: windowStatus.minutesElapsed,
+      intervalMinutes,
+      triggerTimestamp: now.getTime(),
     };
   }
 
-  // Periodic reminder until user goes on the site and presses the confirmation button
-  if (windowStatus.minutesElapsed > 0 && windowStatus.minutesElapsed % interval === 0) {
+  // Case 2: Repetition in the requested interval (e.g. every 5 min, 30 min)
+  const elapsedSinceLastTriggerMs = now.getTime() - lastTriggerTimestamp!;
+  const intervalMs = intervalMinutes * 60 * 1000;
+
+  if (elapsedSinceLastTriggerMs >= intervalMs) {
     return {
       shouldTrigger: true,
-      minuteKey,
+      cycleKey,
       reason: 'repeat_interval',
       scheduledTime: windowStatus.targetTimeStr,
       minutesElapsed: windowStatus.minutesElapsed,
+      intervalMinutes,
+      triggerTimestamp: now.getTime(),
     };
   }
 
-  return { shouldTrigger: false, minuteKey };
+  return {
+    shouldTrigger: false,
+    cycleKey,
+    intervalMinutes,
+    triggerTimestamp: now.getTime(),
+    scheduledTime: windowStatus.targetTimeStr,
+    minutesElapsed: windowStatus.minutesElapsed,
+  };
 }
