@@ -76,7 +76,14 @@ self.addEventListener('push', (event: PushEvent) => {
           },
         } as any);
       } catch (fallbackErr) {
-        console.error('All notification attempts failed:', fallbackErr);
+        console.warn('Standard fallback failed, attempting bare minimum notification:', fallbackErr);
+        try {
+          await self.registration.showNotification(data.title, {
+            body: data.body,
+          } as any);
+        } catch (bareErr) {
+          console.error('All notification attempts failed:', bareErr);
+        }
       }
     }
   };

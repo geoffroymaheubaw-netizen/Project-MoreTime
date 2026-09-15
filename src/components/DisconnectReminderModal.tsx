@@ -17,6 +17,9 @@ import {
   Radio,
   Lock,
   Zap,
+  ChevronDown,
+  ChevronUp,
+  HelpCircle,
 } from 'lucide-react';
 import {
   DisconnectReminderSettings,
@@ -87,6 +90,10 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
   const [countdownTest, setCountdownTest] = useState<number | null>(null);
   const [pushStatusMessage, setPushStatusMessage] = useState<string | null>(null);
   const [mobileEnv, setMobileEnv] = useState(() => detectMobilePushEnvironment());
+  const [showTroubleshooting, setShowTroubleshooting] = useState<boolean>(false);
+  const [troubleshootTab, setTroubleshootTab] = useState<'ios' | 'android'>(() =>
+    detectMobilePushEnvironment().isIOS ? 'ios' : 'android'
+  );
 
   // Sync state on open
   React.useEffect(() => {
@@ -268,13 +275,14 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
     playMinimalClick(soundEnabled);
     setPushStatusMessage(null);
 
+    let timer: NodeJS.Timeout | null = null;
     if (delaySeconds > 0) {
       setCountdownTest(delaySeconds);
       let count = delaySeconds;
-      const timer = setInterval(() => {
+      timer = setInterval(() => {
         count -= 1;
         if (count <= 0) {
-          clearInterval(timer);
+          if (timer) clearInterval(timer);
           setCountdownTest(null);
         } else {
           setCountdownTest(count);
@@ -294,6 +302,8 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
         setPushStatusMessage('Notification envoyée sur votre appareil !');
       }
     } else {
+      if (timer) clearInterval(timer);
+      setCountdownTest(null);
       setPushStatusMessage(res.message || 'Erreur lors de l’envoi du test');
     }
   };
@@ -1028,6 +1038,103 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
               <span>{pushStatusMessage}</span>
             </div>
           )}
+
+          {/* Collapsible Troubleshooting Guide */}
+          <div className="pt-1 border-t border-neutral-800/40">
+            <button
+              onClick={() => {
+                playMinimalClick(soundEnabled);
+                setShowTroubleshooting((prev) => !prev);
+              }}
+              id="btn-toggle-troubleshooting"
+              className="w-full py-1.5 flex items-center justify-between text-xs text-amber-400 hover:text-amber-300 transition cursor-pointer"
+            >
+              <div className="flex items-center gap-1.5 font-medium">
+                <HelpCircle className="w-3.5 h-3.5" />
+                <span>L'écran fermé ne s'allume pas ? Guide de dépannage</span>
+              </div>
+              {showTroubleshooting ? (
+                <ChevronUp className="w-3.5 h-3.5" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5" />
+              )}
+            </button>
+
+            {showTroubleshooting && (
+              <div className="mt-2 p-3 rounded-xl bg-neutral-950/70 border border-neutral-800 text-[11px] text-neutral-300 flex flex-col gap-2.5 animate-in fade-in">
+                {/* Platform Tabs */}
+                <div className="flex rounded-lg bg-neutral-900 p-0.5 border border-neutral-800">
+                  <button
+                    onClick={() => setTroubleshootTab('ios')}
+                    className={`flex-1 py-1 rounded-md text-[11px] font-medium transition cursor-pointer ${
+                      troubleshootTab === 'ios'
+                        ? 'bg-amber-500 text-neutral-950 font-semibold shadow-xs'
+                        : 'text-neutral-400 hover:text-neutral-200'
+                    }`}
+                  >
+                    iPhone (iOS / Apple)
+                  </button>
+                  <button
+                    onClick={() => setTroubleshootTab('android')}
+                    className={`flex-1 py-1 rounded-md text-[11px] font-medium transition cursor-pointer ${
+                      troubleshootTab === 'android'
+                        ? 'bg-amber-500 text-neutral-950 font-semibold shadow-xs'
+                        : 'text-neutral-400 hover:text-neutral-200'
+                    }`}
+                  >
+                    Android (Samsung, Xiaomi, Pixel)
+                  </button>
+                </div>
+
+                {/* iPhone / iOS Guide */}
+                {troubleshootTab === 'ios' && (
+                  <div className="flex flex-col gap-2 leading-relaxed">
+                    <p className="text-amber-300 font-medium">
+                      Sur iPhone, Apple impose des restrictions strictes pour préserver l'autonomie et la vie privée :
+                    </p>
+                    <ol className="list-decimal list-inside space-y-1.5 text-neutral-300">
+                      <li>
+                        <strong className="text-white">Obligation PWA :</strong> Vous devez impérativement appuyer sur le bouton Partager de Safari, puis choisir <span className="text-amber-400">« Sur l'écran d'accueil »</span>. Les notifications écran éteint sont désactivées dans un simple onglet Safari.
+                      </li>
+                      <li>
+                        <strong className="text-white">Ouvrir depuis l'écran d'accueil :</strong> Lancez ensuite l'icône Minimal depuis votre écran d'accueil et réactivez les notifications.
+                      </li>
+                      <li>
+                        <strong className="text-white">Mode Concentration / Repos :</strong> Si le mode « Ne pas déranger » ou « Repos » est activé le soir, iOS masque l'écran. Allez dans <em>Réglages iPhone &gt; Concentration &gt; Repos (ou Ne pas déranger)</em> et ajoutez Minimal aux applications autorisées.
+                      </li>
+                      <li>
+                        <strong className="text-white">Réglages Notifications :</strong> Dans <em>Réglages &gt; Notifications &gt; Minimal</em>, assurez-vous que « Écran verrouillé », « Bannières » et « Sons » sont cochés.
+                      </li>
+                    </ol>
+                  </div>
+                )}
+
+                {/* Android Guide */}
+                {troubleshootTab === 'android' && (
+                  <div className="flex flex-col gap-2 leading-relaxed">
+                    <p className="text-amber-300 font-medium">
+                      Sur Android, les optimiseurs d'énergie coupent souvent les notifications écran éteint :
+                    </p>
+                    <ol className="list-decimal list-inside space-y-1.5 text-neutral-300">
+                      <li>
+                        <strong className="text-white">Batterie non restreinte :</strong> Allez dans <em>Paramètres Android &gt; Applications &gt; Chrome (ou Minimal) &gt; Batterie</em>, et sélectionnez <span className="text-amber-400">« Non restreinte »</span> pour empêcher Android d'endormir le service en veille.
+                      </li>
+                      <li>
+                        <strong className="text-white">Écran de verrouillage :</strong> Dans <em>Paramètres &gt; Notifications &gt; Notifications écran verrouillé</em>, vérifiez que l'affichage du contenu est bien activé.
+                      </li>
+                      <li>
+                        <strong className="text-white">Mode Coucher / Ne pas déranger :</strong> Si votre téléphone passe automatiquement en mode silencieux la nuit, autorisez Minimal ou Chrome dans les exceptions de Ne pas déranger.
+                      </li>
+                    </ol>
+                  </div>
+                )}
+
+                <div className="p-2 rounded-lg bg-neutral-900/80 border border-neutral-800 text-[10px] text-neutral-400">
+                  ⚠️ <strong className="text-neutral-200">Attention à l'environnement de test :</strong> Dans la fenêtre d'aperçu sur ordinateur (iframe), les notifications en arrière-plan sont bloquées par sécurité. Ouvrez le lien direct sur votre smartphone.
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Test Notification Actions */}

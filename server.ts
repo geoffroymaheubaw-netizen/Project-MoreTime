@@ -345,12 +345,14 @@ async function startServer() {
   });
 
   // 1. Return VAPID Public Key for client subscription
-  app.get('/api/push/vapid-public-key', (req, res) => {
+  const getVapidKeyHandler = (_req: express.Request, res: express.Response) => {
     res.json({
       publicKey: vapidPublicKey,
       status: 'active',
     });
-  });
+  };
+  app.get('/api/push/vapid-public-key', getVapidKeyHandler);
+  app.get('/api/push/public-key', getVapidKeyHandler);
 
   // 2. Subscribe endpoint
   app.post('/api/push/subscribe', (req, res) => {

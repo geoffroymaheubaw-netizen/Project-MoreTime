@@ -40,42 +40,55 @@ export function registerNotificationServiceWorker(): void {
 
 /**
  * Pure JavaScript Base64URL-to-Uint8Array decoder
- * Does NOT rely on window.atob(), preventing WebKit DOMException ("The string did not match the expected pattern").
+ * Decodes URL-safe Base64 and returns an exact-length Uint8Array whose underlying
+ * ArrayBuffer has byteLength matching exactly the decoded key (65 bytes for P-256 EC key).
+ * Prevents WebKit DOMException ("The string did not match the expected pattern").
  */
 export function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  // 1. Strip any whitespace, quotes, or accidental non-base64 characters
-  const clean = base64String.replace(/[^A-Za-z0-9\-_+/]/g, '');
-  // 2. Normalize URL-safe characters to standard Base64
-  const standard = clean.replace(/-/g, '+').replace(/_/g, '/');
+  const clean = base64String.trim().replace(/[^A-Za-z0-9\-_]/g, '');
+  const padding = '='.repeat((4 - (clean.length % 4)) % 4);
+  const base64 = (clean + padding).replace(/-/g, '+').replace(/_/g, '/');
 
-  // 3. Fast lookup-table byte decoding without DOM API dependency
+  // Try standard atob first if available
+  if (typeof window !== 'undefined' && typeof window.atob === 'function') {
+    try {
+      const rawData = window.atob(base64);
+      const output = new Uint8Array(rawData.length);
+      for (let i = 0; i < rawData.length; ++i) {
+        output[i] = rawData.charCodeAt(i);
+      }
+      return output;
+    } catch {
+      // fallback to manual lookup table
+    }
+  }
+
+  // Pure JavaScript lookup decoder
   const lookup = new Uint8Array(256);
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   for (let i = 0; i < alphabet.length; i++) {
     lookup[alphabet.charCodeAt(i)] = i;
   }
 
-  const len = standard.length;
-  const bufferLength = Math.floor(len * 0.75);
-  const bytes = new Uint8Array(bufferLength + 4);
-  let p = 0;
+  const output: number[] = [];
+  for (let i = 0; i < base64.length; i += 4) {
+    const c0 = lookup[base64.charCodeAt(i)] || 0;
+    const c1 = lookup[base64.charCodeAt(i + 1)] || 0;
+    const c2 = base64.charAt(i + 2) !== '=' ? lookup[base64.charCodeAt(i + 2)] || 0 : -1;
+    const c3 = base64.charAt(i + 3) !== '=' ? lookup[base64.charCodeAt(i + 3)] || 0 : -1;
 
-  for (let i = 0; i < len; i += 4) {
-    const e1 = lookup[standard.charCodeAt(i)] || 0;
-    const e2 = lookup[standard.charCodeAt(i + 1)] || 0;
-    const e3 = i + 2 < len && standard[i + 2] !== '=' ? lookup[standard.charCodeAt(i + 2)] : 0;
-    const e4 = i + 3 < len && standard[i + 3] !== '=' ? lookup[standard.charCodeAt(i + 3)] : 0;
-
-    bytes[p++] = (e1 << 2) | (e2 >> 4);
-    if (i + 2 < len && standard[i + 2] !== '=') {
-      bytes[p++] = ((e2 & 15) << 4) | (e3 >> 2);
+    output.push((c0 << 2) | (c1 >> 4));
+    if (c2 !== -1) {
+      output.push(((c1 & 15) << 4) | (c2 >> 2));
     }
-    if (i + 3 < len && standard[i + 3] !== '=') {
-      bytes[p++] = ((e3 & 3) << 6) | (e4 & 63);
+    if (c3 !== -1) {
+      output.push(((c2 & 3) << 6) | c3);
     }
   }
 
-  return bytes.subarray(0, p);
+  const result = new Uint8Array(output.length);
+  result.set(output);
+  return result;
 }
 
 /**
@@ -294,9 +307,8 @@ export async function subscribeToWebPush(
 
     if (!subscription) {
       // Multiple attempts with supported key representations to accommodate WebKit / Safari & Chromium:
-      // 1. Uint8Array (standard ArrayBufferView)
-      // 2. ArrayBuffer (convertedVapidKey.buffer)
-      // 3. Raw URL-safe base64 string (W3C USVString specification)
+      // 1. Uint8Array with exact 65-byte underlying ArrayBuffer
+      // 2. Exact ArrayBuffer (convertedVapidKey.buffer)
       let subscribeError: any = null;
 
       try {
@@ -316,16 +328,6 @@ export async function subscribeToWebPush(
         } catch (err2: any) {
           subscribeError = err2;
           console.warn('Subscription attempt 2 (ArrayBuffer) failed:', err2?.message);
-
-          try {
-            subscription = await registration.pushManager.subscribe({
-              userVisibleOnly: true,
-              applicationServerKey: cleanKeyString,
-            });
-          } catch (err3: any) {
-            subscribeError = err3;
-            console.error('All PushManager.subscribe key variants failed:', err3);
-          }
         }
       }
 
@@ -356,7 +358,7 @@ export async function subscribeToWebPush(
     ) {
       msg = "Les notifications sont restreintes dans l'aperçu intégré. Ouvrez l'application dans un nouvel onglet ou sur votre téléphone pour les activer.";
     } else if (lower.includes('pattern') || lower.includes('invalidcharacter')) {
-      msg = "Clé de notification réinitialisée. Veuillez réessayer d'activer les notifications.";
+      msg = "Sur iPhone, ajoutez l'application à votre écran d'accueil (Partager > Sur l'écran d'accueil) pour recevoir les notifications lorsque l'écran est éteint.";
     }
     return {
       success: false,
@@ -456,11 +458,19 @@ export async function sendBackgroundTestPush(
       sub = subscribeResult.subscription;
     }
 
+    const subJson = sub.toJSON();
+    if (!subJson || !subJson.endpoint) {
+      return {
+        success: false,
+        message: 'Abonnement aux notifications incomplet sur cet appareil.',
+      };
+    }
+
     const res = await fetch('/api/push/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        subscription: sub.toJSON(),
+        subscription: subJson,
         delaySeconds,
         message:
           delaySeconds > 0
@@ -469,13 +479,33 @@ export async function sendBackgroundTestPush(
       }),
     });
 
-    const data = await res.json();
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => '');
+      return {
+        success: false,
+        message: `Erreur du serveur (${res.status}): ${errorText || res.statusText}`,
+      };
+    }
+
+    let data: any = {};
+    const responseText = await res.text().catch(() => '');
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      data = { success: true, message: responseText };
+    }
+
     return { success: Boolean(data.success), message: data.message };
   } catch (err: any) {
     console.error('Failed to trigger background test push:', err);
+    let msg = err?.message || 'Erreur lors de l’envoi du test de notification.';
+    const lower = msg.toLowerCase();
+    if (lower.includes('pattern') || lower.includes('invalidcharacter')) {
+      msg = "Sur iPhone, ajoutez l'application à votre écran d'accueil (Partager > Sur l'écran d'accueil) pour recevoir les notifications avec l'écran verrouillé.";
+    }
     return {
       success: false,
-      message: err?.message || 'Erreur lors de l’envoi du test de notification.',
+      message: msg,
     };
   }
 }
