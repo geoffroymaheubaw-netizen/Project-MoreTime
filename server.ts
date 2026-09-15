@@ -26,12 +26,16 @@ if (!vapidPublicKey || !vapidPrivateKey) {
   }
 
   if (!vapidPublicKey || !vapidPrivateKey) {
-    const generated = webpush.generateVAPIDKeys();
-    vapidPublicKey = generated.publicKey;
-    vapidPrivateKey = generated.privateKey;
+    vapidPublicKey =
+      'BOqosgxB-i2KnBDmDa3xdqAxkdfXwvidgeNMN09dRALQDvFu4wKMBf_6wORvxsupU-8K8Rzp0CBzGQ28LJjSFs4';
+    vapidPrivateKey = 'c9Q8xnm8dI4GiLoIW1tSLG5DMOssWo85Alt-BIW6wo8';
     try {
-      fs.writeFileSync(VAPID_FILE, JSON.stringify(generated, null, 2), 'utf-8');
-      console.log('Generated new persistent VAPID keys in vapid-keys.json');
+      fs.writeFileSync(
+        VAPID_FILE,
+        JSON.stringify({ publicKey: vapidPublicKey, privateKey: vapidPrivateKey }, null, 2),
+        'utf-8'
+      );
+      console.log('Saved default persistent VAPID keys in vapid-keys.json');
     } catch (err) {
       console.warn('Could not save vapid-keys.json:', err);
     }

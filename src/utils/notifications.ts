@@ -39,41 +39,75 @@ export function registerNotificationServiceWorker(): void {
 }
 
 /**
- * Utility to convert base64 URL safe VAPID key to Uint8Array for PushManager
+ * Pure JavaScript Base64URL-to-Uint8Array decoder
+ * Does NOT rely on window.atob(), preventing WebKit DOMException ("The string did not match the expected pattern").
  */
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const rawData = window.atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
-  for (let i = 0; i < rawData.length; ++i) {
-    outputArray[i] = rawData.charCodeAt(i);
+export function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  // 1. Strip any whitespace, quotes, or accidental non-base64 characters
+  const clean = base64String.replace(/[^A-Za-z0-9\-_+/]/g, '');
+  // 2. Normalize URL-safe characters to standard Base64
+  const standard = clean.replace(/-/g, '+').replace(/_/g, '/');
+
+  // 3. Fast lookup-table byte decoding without DOM API dependency
+  const lookup = new Uint8Array(256);
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  for (let i = 0; i < alphabet.length; i++) {
+    lookup[alphabet.charCodeAt(i)] = i;
   }
-  return outputArray;
+
+  const len = standard.length;
+  const bufferLength = Math.floor(len * 0.75);
+  const bytes = new Uint8Array(bufferLength + 4);
+  let p = 0;
+
+  for (let i = 0; i < len; i += 4) {
+    const e1 = lookup[standard.charCodeAt(i)] || 0;
+    const e2 = lookup[standard.charCodeAt(i + 1)] || 0;
+    const e3 = i + 2 < len && standard[i + 2] !== '=' ? lookup[standard.charCodeAt(i + 2)] : 0;
+    const e4 = i + 3 < len && standard[i + 3] !== '=' ? lookup[standard.charCodeAt(i + 3)] : 0;
+
+    bytes[p++] = (e1 << 2) | (e2 >> 4);
+    if (i + 2 < len && standard[i + 2] !== '=') {
+      bytes[p++] = ((e2 & 15) << 4) | (e3 >> 2);
+    }
+    if (i + 3 < len && standard[i + 3] !== '=') {
+      bytes[p++] = ((e3 & 3) << 6) | (e4 & 63);
+    }
+  }
+
+  return bytes.subarray(0, p);
 }
 
 /**
- * VAPID public key corresponding to server-side keys
+ * VAPID public key corresponding strictly to server-side keys
  */
 export const APP_VAPID_PUBLIC_KEY =
-  'BPOkMYX6lXv6RCyYE4vAyOm9oBA9JWsJV112pV2jWEgt85vdntBtKPZNMpwhtl_BlIdOGnJIjrPLDSwWraoacPs';
+  'BOqosgxB-i2KnBDmDa3xdqAxkdfXwvidgeNMN09dRALQDvFu4wKMBf_6wORvxsupU-8K8Rzp0CBzGQ28LJjSFs4';
 
 /**
- * Retrieves VAPID public key from backend server with instant fallback to application key
+ * Retrieves VAPID public key from backend server with safe text parsing and instant fallback
  */
 export async function getVapidPublicKey(): Promise<string> {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500);
+    const timeout = setTimeout(() => controller.abort(), 2000);
     const res = await fetch('/api/push/vapid-public-key', {
       signal: controller.signal,
       headers: { Accept: 'application/json' },
     });
     clearTimeout(timeout);
     if (res.ok) {
-      const data = await res.json();
-      if (data && typeof data.publicKey === 'string' && data.publicKey.length > 20) {
-        return data.publicKey;
+      const text = await res.text();
+      try {
+        const data = JSON.parse(text);
+        if (data && typeof data.publicKey === 'string') {
+          const sanitized = data.publicKey.trim().replace(/[^A-Za-z0-9\-_]/g, '');
+          if (sanitized.length > 20) {
+            return sanitized;
+          }
+        }
+      } catch {
+        // text was not json
       }
     }
   } catch (err) {
@@ -225,35 +259,79 @@ export async function subscribeToWebPush(
     }
 
     // 4. Check existing or create subscription
-    let subscription = await registration.pushManager.getSubscription();
-    const convertedVapidKey = urlBase64ToUint8Array(publicKey);
+    let subscription: PushSubscription | null = null;
+    try {
+      subscription = await registration.pushManager.getSubscription();
+    } catch (getErr) {
+      console.warn('Could not read existing push subscription:', getErr);
+    }
+
+    const cleanKeyString = publicKey.trim().replace(/[^A-Za-z0-9\-_]/g, '');
+    const convertedVapidKey = urlBase64ToUint8Array(cleanKeyString);
 
     // If subscription exists, verify if applicationServerKey matches current server key
     if (subscription) {
-      const existingKeyRaw = subscription.options?.applicationServerKey;
-      let matches = false;
-      if (existingKeyRaw) {
-        const existingArray = new Uint8Array(existingKeyRaw);
-        if (existingArray.length === convertedVapidKey.length) {
-          matches = existingArray.every((b, i) => b === convertedVapidKey[i]);
+      try {
+        const existingKeyRaw = subscription.options?.applicationServerKey;
+        let matches = false;
+        if (existingKeyRaw) {
+          const existingArray = new Uint8Array(existingKeyRaw);
+          if (existingArray.length === convertedVapidKey.length) {
+            matches = existingArray.every((b, i) => b === convertedVapidKey[i]);
+          }
         }
-      }
-      if (!matches) {
-        console.log('[Web Push] Existing subscription key differs from current server key, renewing...');
-        try {
-          await subscription.unsubscribe();
-        } catch {
-          // ignore
+        if (!matches) {
+          console.log('[Web Push] Existing subscription key differs from current server key, renewing...');
+          await subscription.unsubscribe().catch(() => {});
+          subscription = null;
         }
+      } catch (checkErr) {
+        console.warn('Could not compare subscription key, clearing stale subscription:', checkErr);
+        await subscription.unsubscribe().catch(() => {});
         subscription = null;
       }
     }
 
     if (!subscription) {
-      subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: convertedVapidKey,
-      });
+      // Multiple attempts with supported key representations to accommodate WebKit / Safari & Chromium:
+      // 1. Uint8Array (standard ArrayBufferView)
+      // 2. ArrayBuffer (convertedVapidKey.buffer)
+      // 3. Raw URL-safe base64 string (W3C USVString specification)
+      let subscribeError: any = null;
+
+      try {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: convertedVapidKey,
+        });
+      } catch (err1: any) {
+        subscribeError = err1;
+        console.warn('Subscription attempt 1 (Uint8Array) failed:', err1?.message);
+
+        try {
+          subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: convertedVapidKey.buffer as ArrayBuffer,
+          });
+        } catch (err2: any) {
+          subscribeError = err2;
+          console.warn('Subscription attempt 2 (ArrayBuffer) failed:', err2?.message);
+
+          try {
+            subscription = await registration.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: cleanKeyString,
+            });
+          } catch (err3: any) {
+            subscribeError = err3;
+            console.error('All PushManager.subscribe key variants failed:', err3);
+          }
+        }
+      }
+
+      if (!subscription && subscribeError) {
+        throw subscribeError;
+      }
     }
 
     // 5. Sync with server
@@ -266,14 +344,19 @@ export async function subscribeToWebPush(
     console.error('Error subscribing to Web Push:', err);
     let msg = err?.message || 'Erreur lors de l’inscription au service Push.';
     const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
+    const lower = msg.toLowerCase();
+
     if (
       isInIframe &&
-      (msg.toLowerCase().includes('permission') ||
-        msg.toLowerCase().includes('denied') ||
-        msg.toLowerCase().includes('not allowed') ||
-        msg.toLowerCase().includes('pushmanager'))
+      (lower.includes('permission') ||
+        lower.includes('denied') ||
+        lower.includes('not allowed') ||
+        lower.includes('pushmanager') ||
+        lower.includes('pattern'))
     ) {
       msg = "Les notifications sont restreintes dans l'aperçu intégré. Ouvrez l'application dans un nouvel onglet ou sur votre téléphone pour les activer.";
+    } else if (lower.includes('pattern') || lower.includes('invalidcharacter')) {
+      msg = "Clé de notification réinitialisée. Veuillez réessayer d'activer les notifications.";
     }
     return {
       success: false,

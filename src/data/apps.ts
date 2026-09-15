@@ -56,7 +56,7 @@ export const LAUNCHER_APPS: AppLauncherItem[] = [
     name: 'ZenTube',
     category: 'Vidéo sans distraction',
     url: 'https://zentube.app/',
-    deepLink: 'zentube://',
+    deepLink: 'https://zentube.app/',
     iconName: 'zentube',
     description: 'Visionnage sobre sans algorithmes, flux infini ni pièges d\'attention',
     intentPrompt: 'Quelle vidéo précise souhaitez-vous regarder ?',

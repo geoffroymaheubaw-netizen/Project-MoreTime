@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ExternalLink, X, Wind, Check, Smartphone, Globe, RefreshCw } from 'lucide-react';
 import { AppLauncherItem, ThemeMode } from '../types';
 import { playMinimalClick } from '../utils/audio';
-import { getPrimaryDeepLink, getAlternativeDeepLink } from '../utils/launcher';
+import { getPrimaryDeepLink, getAlternativeDeepLink, getMobilePlatform, isCustomScheme } from '../utils/launcher';
 
 interface MindfulModalProps {
   app: AppLauncherItem | null;
@@ -48,6 +48,21 @@ export const MindfulModal: React.FC<MindfulModalProps> = ({
 
   const primaryDeepLink = getPrimaryDeepLink(app);
   const alternativeDeepLink = getAlternativeDeepLink(app);
+  const isCustom = primaryDeepLink ? isCustomScheme(primaryDeepLink) : false;
+  const isZenTube = app.id === 'zentube';
+  const platform = getMobilePlatform();
+
+  const primaryBtnLabel = isZenTube
+    ? 'Accéder à ZenTube'
+    : isCustom
+    ? `Ouvrir l'application mobile (${app.name})`
+    : `Accéder à ${app.name}`;
+
+  const altBtnLabel = isZenTube
+    ? platform === 'ios'
+      ? "Télécharger ZenTube (App Store)"
+      : "Voir ZenTube (Google Play)"
+    : 'Essayer le lien direct alternatif';
 
   const handleOpenTarget = (deepLinkUrl?: string) => {
     playMinimalClick(soundEnabled);
@@ -146,39 +161,41 @@ export const MindfulModal: React.FC<MindfulModalProps> = ({
                     : 'bg-white text-neutral-950 font-semibold hover:bg-neutral-200'
                 }`}
               >
-                <Smartphone className="w-4 h-4" />
-                <span>Ouvrir l'application mobile ({app.name})</span>
+                {isCustom ? <Smartphone className="w-4 h-4" /> : <ExternalLink className="w-4 h-4" />}
+                <span>{primaryBtnLabel}</span>
               </button>
 
               {alternativeDeepLink && (
                 <button
                   onClick={() => handleOpenTarget(alternativeDeepLink)}
                   id="btn-launch-alt-deep-link"
-                  className={`w-full py-1.5 px-3 rounded-lg text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  className={`w-full py-2 px-3 rounded-lg text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                     isLight
-                      ? 'text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100'
-                      : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
+                      ? 'text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 border border-neutral-200/80'
+                      : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900 border border-neutral-800/80'
                   }`}
                 >
                   <RefreshCw className="w-3 h-3" />
-                  <span>Essayer le lien direct alternatif</span>
+                  <span>{altBtnLabel}</span>
                 </button>
               )}
 
-              <button
-                onClick={() => handleOpenTarget(undefined)}
-                id="btn-launch-web-link"
-                className={`w-full py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                  isLight
-                    ? 'border border-neutral-200 text-neutral-600 hover:bg-neutral-100'
-                    : isEink
-                    ? 'border border-neutral-400 text-neutral-800'
-                    : 'border border-neutral-800 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
-                }`}
-              >
-                <Globe className="w-3.5 h-3.5" />
-                <span>Ouvrir la version Web (navigateur)</span>
-              </button>
+              {primaryDeepLink !== app.url && (
+                <button
+                  onClick={() => handleOpenTarget(undefined)}
+                  id="btn-launch-web-link"
+                  className={`w-full py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                    isLight
+                      ? 'border border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                      : isEink
+                      ? 'border border-neutral-400 text-neutral-800'
+                      : 'border border-neutral-800 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
+                  }`}
+                >
+                  <Globe className="w-3.5 h-3.5" />
+                  <span>Ouvrir la version Web (navigateur)</span>
+                </button>
+              )}
             </>
           ) : (
             <button

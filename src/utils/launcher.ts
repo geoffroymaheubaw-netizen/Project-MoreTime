@@ -54,10 +54,9 @@ export function getPrimaryDeepLink(app: AppLauncherItem): string | undefined {
   }
 
   if (app.id === 'zentube') {
-    if (platform === 'android') {
-      return 'intent://zentube.app/#Intent;scheme=https;package=com.intenca.zentube;S.browser_fallback_url=https%3A%2F%2Fzentube.app%2F;end';
-    }
-    return 'zentube://';
+    // ZenTube is accessible directly at https://zentube.app/
+    // On iOS, navigating to https://zentube.app/ triggers native Universal Links if installed
+    return 'https://zentube.app/';
   }
 
   if (app.id === 'weather') {
@@ -80,6 +79,17 @@ export function getPrimaryDeepLink(app: AppLauncherItem): string | undefined {
  */
 export function getAlternativeDeepLink(app: AppLauncherItem): string | undefined {
   const platform = getMobilePlatform();
+
+  if (app.id === 'zentube') {
+    if (platform === 'ios') {
+      // Official App Store link for ZenTube Decluttered
+      return 'https://apps.apple.com/app/zentube-decluttered/id6447817424';
+    }
+    if (platform === 'android') {
+      return 'https://play.google.com/store/apps/details?id=com.zentubeofficial.zentube';
+    }
+    return 'https://zentube.app/';
+  }
 
   if (app.id === 'weather') {
     if (platform === 'android') {
@@ -122,16 +132,21 @@ export function getAlternativeDeepLink(app: AppLauncherItem): string | undefined
  */
 export function launchAppUrl(targetUrl: string, fallbackWebUrl?: string, isAppTarget: boolean = false): void {
   const isScheme = isCustomScheme(targetUrl);
-  // If it's a custom scheme OR if it's explicitly designated as an app target (e.g. Universal Link like NotebookLM on iOS)
-  if (isScheme || isAppTarget || targetUrl.includes('notebooklm.google.com')) {
-    // 1. Direct window navigation (safest and triggers native app handlers on iOS and Android)
+
+  if (isScheme) {
+    let hasNavigatedAway = false;
+    const onPageHide = () => {
+      hasNavigatedAway = true;
+    };
+    window.addEventListener('pagehide', onPageHide, { once: true });
+
+    // 1. Attempt native scheme navigation
     try {
       window.location.href = targetUrl;
     } catch (e) {
       console.warn('Direct location.href launch error:', e);
     }
 
-    // 2. Also click a hidden anchor as secondary trigger
     try {
       const anchor = document.createElement('a');
       anchor.href = targetUrl;
@@ -139,26 +154,60 @@ export function launchAppUrl(targetUrl: string, fallbackWebUrl?: string, isAppTa
       document.body.appendChild(anchor);
       anchor.click();
       document.body.removeChild(anchor);
-    } catch (e) {
+    } catch {
       // Ignore
     }
 
-    // Optional fallback to web if app is not installed and user is still on page after a delay
+    // 2. Automated fallback to web URL if app is not installed and user is still on page
     if (fallbackWebUrl && fallbackWebUrl !== targetUrl) {
-      const timeout = setTimeout(() => {
-        if (document.visibilityState === 'visible') {
-          console.info('App may not be installed, web link is available');
+      setTimeout(() => {
+        window.removeEventListener('pagehide', onPageHide);
+        if (!hasNavigatedAway && typeof document !== 'undefined' && document.visibilityState === 'visible') {
+          console.info('Native application not responding, redirecting to web version:', fallbackWebUrl);
+          try {
+            const win = window.open(fallbackWebUrl, '_blank', 'noopener,noreferrer');
+            if (!win || win.closed || typeof win.closed === 'undefined') {
+              window.location.href = fallbackWebUrl;
+            }
+          } catch {
+            window.location.href = fallbackWebUrl;
+          }
         }
-      }, 2500);
-
-      window.addEventListener(
-        'pagehide',
-        () => clearTimeout(timeout),
-        { once: true }
-      );
+      }, 1800);
     }
   } else {
-    // Standard web URL in new tab
-    window.open(targetUrl, '_blank', 'noopener,noreferrer');
+    // Standard web URL or Universal Link (e.g. https://zentube.app/, https://notebooklm.google.com/)
+    let opened = false;
+
+    // Try standard popup / new tab
+    try {
+      const win = window.open(targetUrl, '_blank', 'noopener,noreferrer');
+      if (win && !win.closed && typeof win.closed !== 'undefined') {
+        opened = true;
+      }
+    } catch {
+      opened = false;
+    }
+
+    // If popup blocked or inside iframe/PWA, trigger synthetic anchor
+    if (!opened) {
+      try {
+        const anchor = document.createElement('a');
+        anchor.href = targetUrl;
+        anchor.target = '_blank';
+        anchor.rel = 'noopener noreferrer';
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        opened = true;
+      } catch {
+        opened = false;
+      }
+    }
+
+    // If still blocked in strict container, navigate current window
+    if (!opened) {
+      window.location.href = targetUrl;
+    }
   }
 }
