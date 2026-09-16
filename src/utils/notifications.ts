@@ -641,6 +641,11 @@ export async function triggerDisconnectAlert(
     triggerBedtimeHaptic(true);
   }
 
+  // Also dispatch directly to Telegram subscribers if configured (works on Vercel & mobile)
+  sendTelegramCurfewAlertDirect(message).catch((err) => {
+    console.warn('Direct telegram alert error:', err);
+  });
+
   return sendPhoneNotification('🌙 Lâchez votre téléphone', {
     body: message,
     tag: 'curfew-disconnect-alert',
@@ -892,53 +897,300 @@ export function evaluateDisconnectTrigger(
 }
 
 // -----------------------------------------------------------------------------
-// Telegram Bot Notification Helpers
 // -----------------------------------------------------------------------------
+// Telegram Bot Notification Helpers (Client-First + Server Hybrid)
+// -----------------------------------------------------------------------------
+export interface TelegramSubscriberItem {
+  chatId: string;
+  name: string;
+  username?: string;
+  registeredAt: number;
+}
+
 export interface TelegramStatus {
   configured: boolean;
   botUsername: string | null;
   botFirstName: string | null;
   subscribersCount: number;
-  subscribers: Array<{
-    chatId: string;
-    name: string;
-    username?: string;
-    registeredAt: number;
-  }>;
+  subscribers: TelegramSubscriberItem[];
+}
+
+export interface LocalTelegramConfig {
+  token: string;
+  botUsername: string;
+  botFirstName: string;
+  subscribers: TelegramSubscriberItem[];
+  lastUpdateId?: number;
+}
+
+const LOCAL_TELEGRAM_KEY = 'minimal_launcher_telegram_config';
+
+/**
+ * Get locally stored Telegram bot config
+ */
+export function getLocalTelegramConfig(): LocalTelegramConfig | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(LOCAL_TELEGRAM_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.token === 'string' && parsed.token.trim()) {
+      return {
+        token: parsed.token.trim(),
+        botUsername: parsed.botUsername || '',
+        botFirstName: parsed.botFirstName || 'Bot Telegram',
+        subscribers: Array.isArray(parsed.subscribers) ? parsed.subscribers : [],
+        lastUpdateId: typeof parsed.lastUpdateId === 'number' ? parsed.lastUpdateId : 0,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Save locally stored Telegram bot config
+ */
+export function saveLocalTelegramConfig(conf: LocalTelegramConfig): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(LOCAL_TELEGRAM_KEY, JSON.stringify(conf));
+  } catch (err) {
+    console.warn('Could not save telegram config to localStorage:', err);
+  }
 }
 
 /**
  * Check if a Telegram bot is configured and get registered accounts
+ * Checks client localStorage first (works on Vercel/mobile), and falls back to server if available
  */
 export async function fetchTelegramStatus(): Promise<TelegramStatus | null> {
+  const local = getLocalTelegramConfig();
+
+  // Try server in background/parallel (with a short 1200ms timeout)
+  let serverStatus: TelegramStatus | null = null;
   try {
-    const res = await fetch('/api/telegram/status');
-    if (!res.ok) return null;
-    return (await res.json()) as TelegramStatus;
-  } catch (err) {
-    console.warn('Failed to fetch telegram status:', err);
-    return null;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 1200);
+    const res = await fetch('/api/telegram/status', { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (res.ok) {
+      serverStatus = (await res.json()) as TelegramStatus;
+    }
+  } catch {
+    // Expected on Vercel static deployments
   }
+
+  // If local config exists (e.g. entered directly on phone on Vercel)
+  if (local && local.token) {
+    // Merge server subscribers if server had any
+    const subscribersMap = new Map<string, TelegramSubscriberItem>();
+    local.subscribers.forEach((s) => subscribersMap.set(s.chatId, s));
+    if (serverStatus?.subscribers) {
+      serverStatus.subscribers.forEach((s) => {
+        if (!subscribersMap.has(s.chatId)) {
+          subscribersMap.set(s.chatId, s);
+        }
+      });
+    }
+
+    const mergedSubs = Array.from(subscribersMap.values());
+    if (mergedSubs.length !== local.subscribers.length) {
+      local.subscribers = mergedSubs;
+      saveLocalTelegramConfig(local);
+    }
+
+    return {
+      configured: true,
+      botUsername: local.botUsername || serverStatus?.botUsername || null,
+      botFirstName: local.botFirstName || serverStatus?.botFirstName || 'Bot Telegram',
+      subscribersCount: mergedSubs.length,
+      subscribers: mergedSubs,
+    };
+  }
+
+  // If only server is configured
+  if (serverStatus && serverStatus.configured) {
+    return serverStatus;
+  }
+
+  return {
+    configured: false,
+    botUsername: null,
+    botFirstName: null,
+    subscribersCount: 0,
+    subscribers: [],
+  };
 }
 
 /**
  * Poll Telegram to link new users who pressed /start
+ * Works directly from browser via Telegram API (CORS enabled) so it runs on Vercel!
  */
 export async function syncTelegramSubscribers(): Promise<TelegramStatus | null> {
-  try {
-    const res = await fetch('/api/telegram/sync', { method: 'POST' });
-    if (!res.ok) return null;
-    return (await res.json()) as TelegramStatus;
-  } catch (err) {
-    console.warn('Failed to sync telegram subscribers:', err);
-    return null;
+  const local = getLocalTelegramConfig();
+
+  // 1. Client-side sync via direct Telegram API
+  if (local && local.token) {
+    try {
+      const offset = (local.lastUpdateId || 0) + 1;
+      const res = await fetch(
+        `https://api.telegram.org/bot${local.token}/getUpdates?offset=${offset}&timeout=2`
+      );
+      const data = await res.json();
+
+      if (data.ok && Array.isArray(data.result)) {
+        const subscribersMap = new Map<string, TelegramSubscriberItem>();
+        local.subscribers.forEach((s) => subscribersMap.set(s.chatId, s));
+
+        let maxUpdateId = local.lastUpdateId || 0;
+        let newFound = 0;
+
+        for (const update of data.result) {
+          if (update.update_id > maxUpdateId) {
+            maxUpdateId = update.update_id;
+          }
+
+          const msg = update.message || update.callback_query?.message;
+          const from = update.message?.from || update.callback_query?.from;
+          const chat = msg?.chat;
+
+          if (chat && chat.id) {
+            const chatId = String(chat.id);
+            if (!subscribersMap.has(chatId)) {
+              const name = from?.first_name || chat.first_name || 'Utilisateur';
+              const username = from?.username || chat.username;
+              subscribersMap.set(chatId, {
+                chatId,
+                name,
+                username,
+                registeredAt: Date.now(),
+              });
+              newFound++;
+
+              // Send welcome confirmation message directly to the user's phone on Telegram
+              fetch(`https://api.telegram.org/bot${local.token}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  chat_id: chatId,
+                  text: `👋 Bonjour <b>${name}</b> !\n\n✅ <b>Votre téléphone est connecté à Minimal Launcher.</b>\n\nVous recevrez vos alertes de couvre-feu et rappels de déconnexion ici même.`,
+                  parse_mode: 'HTML',
+                }),
+              }).catch(() => {});
+            }
+          }
+        }
+
+        local.subscribers = Array.from(subscribersMap.values());
+        local.lastUpdateId = maxUpdateId;
+        saveLocalTelegramConfig(local);
+      }
+    } catch (clientErr) {
+      console.warn('Client-side Telegram sync warning:', clientErr);
+    }
   }
+
+  // 2. Also ping server sync if server is available
+  try {
+    await fetch('/api/telegram/sync', { method: 'POST' });
+  } catch {
+    // Expected on Vercel
+  }
+
+  return fetchTelegramStatus();
+}
+
+/**
+ * Manually add a Telegram subscriber by Chat ID (e.g. if known)
+ */
+export function addManualTelegramSubscriber(
+  chatId: string,
+  name: string = 'Utilisateur'
+): boolean {
+  const local = getLocalTelegramConfig();
+  if (!local) return false;
+  const cleanId = chatId.trim();
+  if (!cleanId) return false;
+
+  const exists = local.subscribers.some((s) => s.chatId === cleanId);
+  if (!exists) {
+    local.subscribers.push({
+      chatId: cleanId,
+      name,
+      registeredAt: Date.now(),
+    });
+    saveLocalTelegramConfig(local);
+  }
+  return true;
 }
 
 /**
  * Send an immediate test notification via Telegram Bot
+ * Directly calls Telegram Bot API if configured on client, with server fallback
  */
-export async function testTelegramAlert(chatId?: string): Promise<{ success: boolean; message: string }> {
+export async function testTelegramAlert(
+  chatId?: string
+): Promise<{ success: boolean; message: string }> {
+  const local = getLocalTelegramConfig();
+
+  // If configured on client (e.g. Vercel deployment)
+  if (local && local.token) {
+    const targetChatId = chatId || local.subscribers[0]?.chatId;
+    if (!targetChatId) {
+      // Try to poll updates once to see if user started bot
+      await syncTelegramSubscribers();
+      const updatedLocal = getLocalTelegramConfig();
+      const updatedChatId = updatedLocal?.subscribers[0]?.chatId;
+
+      if (!updatedChatId) {
+        return {
+          success: false,
+          message:
+            "Aucun compte Telegram lié pour l'instant. Ouvrez votre bot sur Telegram et appuyez sur « Démarrer » (/start) d'abord !",
+        };
+      }
+      return testTelegramAlert(updatedChatId);
+    }
+
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${local.token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: targetChatId,
+          text: `🌙 <b>Test Couvre-Feu Minimal</b>\n\nVotre alerte de déconnexion fonctionne parfaitement sur votre téléphone ! Vous recevrez vos rappels ici même à l'heure programmée.`,
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "✅ J'arrête mon téléphone", callback_data: 'confirm_night_test' }],
+            ],
+          },
+        }),
+      });
+
+      const data = await res.json();
+      if (data.ok) {
+        return {
+          success: true,
+          message: 'Notification Telegram envoyée avec succès sur votre téléphone !',
+        };
+      } else {
+        return {
+          success: false,
+          message: data.description || "Erreur lors de l'envoi via Telegram.",
+        };
+      }
+    } catch (err: any) {
+      return {
+        success: false,
+        message: err?.message || 'Erreur réseau vers Telegram.',
+      };
+    }
+  }
+
+  // Fallback to server if available
   try {
     const res = await fetch('/api/telegram/test', {
       method: 'POST',
@@ -953,21 +1205,154 @@ export async function testTelegramAlert(chatId?: string): Promise<{ success: boo
 }
 
 /**
+ * Send a disconnect alert to all registered Telegram subscribers directly from client (Vercel compatible)
+ */
+export async function sendTelegramCurfewAlertDirect(message: string): Promise<boolean> {
+  const local = getLocalTelegramConfig();
+  if (!local || !local.token || local.subscribers.length === 0) {
+    return false;
+  }
+
+  let anySent = false;
+  for (const sub of local.subscribers) {
+    try {
+      await fetch(`https://api.telegram.org/bot${local.token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: sub.chatId,
+          text: `🌙 <b>Rappel de déconnexion Minimal</b>\n\n${message}\n\n<i>Posez votre téléphone et préservez votre sommeil.</i>`,
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "✅ J'arrête mon téléphone", callback_data: 'confirm_night' }],
+            ],
+          },
+        }),
+      });
+      anySent = true;
+    } catch (err) {
+      console.warn(`Failed to send direct telegram alert to ${sub.chatId}:`, err);
+    }
+  }
+  return anySent;
+}
+
+/**
  * Save Telegram bot token entered by user directly in the UI
+ * Validates with Telegram API directly so it works on Vercel without a backend!
  */
 export async function saveTelegramToken(
-  token: string
+  rawToken: string
 ): Promise<{ success: boolean; botUsername?: string; botFirstName?: string; error?: string }> {
+  const token = (rawToken || '').trim();
+  if (!token) {
+    return { success: false, error: 'Le token ne peut pas être vide' };
+  }
+
+  // Rough format validation (123456789:ABCdef...)
+  if (!/^\d+:[A-Za-z0-9_-]{20,}$/.test(token)) {
+    return {
+      success: false,
+      error: 'Format de token invalide. Il doit ressembler à : 123456789:AAFlkmx_...',
+    };
+  }
+
+  // 1. Direct validation with Telegram API (CORS supported!)
   try {
-    const res = await fetch('/api/telegram/token', {
+    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const data = await res.json();
+
+    if (!data.ok || !data.result) {
+      return {
+        success: false,
+        error: data.description || 'Token rejeté par l’API Telegram. Vérifiez auprès de @BotFather.',
+      };
+    }
+
+    const username = data.result.username || '';
+    const firstName = data.result.first_name || 'Bot Telegram';
+
+    // Save in client localStorage
+    const existing = getLocalTelegramConfig();
+    const newConfig: LocalTelegramConfig = {
+      token,
+      botUsername: username,
+      botFirstName: firstName,
+      subscribers: existing?.token === token ? existing.subscribers : (existing?.subscribers || []),
+      lastUpdateId: existing?.token === token ? existing.lastUpdateId : 0,
+    };
+
+    // If bot matches Geoffroy's bot and no subscriber yet, pre-link Geoffroy's chat ID
+    if (username.toLowerCase().includes('geoffroy') && newConfig.subscribers.length === 0) {
+      newConfig.subscribers.push({
+        chatId: '7712575789',
+        name: 'Geoffroy',
+        username: 'Gang_gang_bitchass_nigeria',
+        registeredAt: Date.now(),
+      });
+    }
+
+    saveLocalTelegramConfig(newConfig);
+
+    // Auto-detect subscribers immediately if messages exist
+    try {
+      const updatesRes = await fetch(`https://api.telegram.org/bot${token}/getUpdates?limit=20`);
+      const updatesData = await updatesRes.json();
+      if (updatesData.ok && Array.isArray(updatesData.result)) {
+        const subsMap = new Map<string, TelegramSubscriberItem>();
+        newConfig.subscribers.forEach((s) => subsMap.set(s.chatId, s));
+
+        for (const u of updatesData.result) {
+          const chat = u.message?.chat || u.callback_query?.message?.chat;
+          const from = u.message?.from || u.callback_query?.from;
+          if (chat && chat.id) {
+            const chatId = String(chat.id);
+            if (!subsMap.has(chatId)) {
+              subsMap.set(chatId, {
+                chatId,
+                name: from?.first_name || chat.first_name || 'Utilisateur',
+                username: from?.username || chat.username,
+                registeredAt: Date.now(),
+              });
+            }
+          }
+        }
+        newConfig.subscribers = Array.from(subsMap.values());
+        saveLocalTelegramConfig(newConfig);
+      }
+    } catch {
+      // Non-blocking
+    }
+
+    // 2. Best-effort server sync (in case a backend is running)
+    fetch('/api/telegram/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token }),
-    });
-    const data = await res.json();
-    return data;
-  } catch (err: any) {
-    return { success: false, error: err?.message || 'Erreur réseau vers le serveur' };
+    }).catch(() => {});
+
+    return {
+      success: true,
+      botUsername: username,
+      botFirstName: firstName,
+    };
+  } catch (directErr: any) {
+    // If direct browser request was blocked (e.g. adblocker), try server fallback
+    try {
+      const res = await fetch('/api/telegram/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      });
+      const data = await res.json();
+      return data;
+    } catch {
+      return {
+        success: false,
+        error: `Impossible de joindre Telegram: ${directErr?.message || 'Erreur réseau'}. Vérifiez votre connexion internet.`,
+      };
+    }
   }
 }
 
@@ -975,12 +1360,19 @@ export async function saveTelegramToken(
  * Remove Telegram bot token
  */
 export async function deleteTelegramToken(): Promise<boolean> {
-  try {
-    const res = await fetch('/api/telegram/token', { method: 'DELETE' });
-    return res.ok;
-  } catch {
-    return false;
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.removeItem(LOCAL_TELEGRAM_KEY);
+    } catch {
+      // ignore
+    }
   }
+  try {
+    await fetch('/api/telegram/token', { method: 'DELETE' });
+  } catch {
+    // ignore
+  }
+  return true;
 }
 
 /**

@@ -54,6 +54,7 @@ import {
   syncCurfewScheduleWithServer,
   saveTelegramToken,
   deleteTelegramToken,
+  addManualTelegramSubscriber,
   TelegramStatus,
 } from '../utils/notifications';
 
@@ -124,6 +125,10 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
   const [tokenSuccess, setTokenSuccess] = useState<string | null>(null);
   const [showBotFatherSteps, setShowBotFatherSteps] = useState<boolean>(false);
 
+  // Manual chat ID input state (for quick direct pairing on phone/Vercel)
+  const [manualChatIdInput, setManualChatIdInput] = useState<string>('');
+  const [showManualIdInput, setShowManualIdInput] = useState<boolean>(false);
+
   // Sync state on open
   React.useEffect(() => {
     if (isOpen) {
@@ -152,6 +157,26 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
       syncCurfewScheduleWithServer(settings);
     }
   }, [isOpen, settings]);
+
+  // Auto-poll Telegram when user switches back to the tab (e.g. after tapping /start in Telegram app)
+  React.useEffect(() => {
+    if (!isOpen || notificationChannelTab !== 'telegram') return;
+
+    const handleTabReactivation = () => {
+      if (document.visibilityState === 'visible') {
+        syncTelegramSubscribers().then((status) => {
+          if (status) setTelegramStatus(status);
+        });
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleTabReactivation);
+    window.addEventListener('focus', handleTabReactivation);
+    return () => {
+      document.removeEventListener('visibilitychange', handleTabReactivation);
+      window.removeEventListener('focus', handleTabReactivation);
+    };
+  }, [isOpen, notificationChannelTab]);
 
   if (!isOpen) return null;
 
@@ -247,6 +272,19 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
     } finally {
       setIsSavingToken(false);
     }
+  };
+
+  const handleAddManualChatId = () => {
+    const trimmed = manualChatIdInput.trim();
+    if (!trimmed) return;
+    playMinimalClick(soundEnabled);
+    addManualTelegramSubscriber(trimmed, 'Mon Téléphone');
+    fetchTelegramStatus().then((s) => {
+      setTelegramStatus(s);
+      setTelegramFeedback(`ID ${trimmed} associé avec succès !`);
+      setManualChatIdInput('');
+      setShowManualIdInput(false);
+    });
   };
 
   const handleToggleEnable = () => {
@@ -1236,7 +1274,7 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
 
                 {/* If no subscriber yet, prompt to click link and start */}
                 {telegramStatus.subscribersCount === 0 ? (
-                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 flex flex-col gap-2 text-[11px]">
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 flex flex-col gap-2.5 text-[11px]">
                     <strong className="text-white font-medium">Reliez votre Telegram en 2 étapes :</strong>
                     <div className="text-neutral-300">
                       1. Touchez le bouton ci-dessous pour ouvrir votre bot :
@@ -1246,7 +1284,7 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
                       href={`https://t.me/${telegramStatus.botUsername}?start=minimal`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="w-full py-2 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-neutral-950 font-semibold text-xs flex items-center justify-center gap-1.5 transition text-center"
+                      className="w-full py-2 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-neutral-950 font-semibold text-xs flex items-center justify-center gap-1.5 transition text-center shadow-xs"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
                       <span>Ouvrir @{telegramStatus.botUsername} sur Telegram</span>
@@ -1264,6 +1302,38 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
                       <RefreshCw className={`w-3.5 h-3.5 ${isSyncingTelegram ? 'animate-spin' : ''}`} />
                       <span>{isSyncingTelegram ? 'Recherche en cours...' : 'Vérifier la connexion avec Telegram'}</span>
                     </button>
+
+                    <div className="pt-1.5 border-t border-amber-500/20 flex flex-col gap-1.5">
+                      <button
+                        onClick={() => {
+                          playMinimalClick(soundEnabled);
+                          setShowManualIdInput((prev) => !prev);
+                        }}
+                        className="text-[10px] text-amber-400/80 hover:text-amber-300 transition text-left cursor-pointer flex items-center justify-between"
+                      >
+                        <span>Ou renseigner votre Chat ID manuellement</span>
+                        <span>{showManualIdInput ? '▲' : '▼'}</span>
+                      </button>
+
+                      {showManualIdInput && (
+                        <div className="flex items-center gap-1.5 pt-1">
+                          <input
+                            type="text"
+                            value={manualChatIdInput}
+                            onChange={(e) => setManualChatIdInput(e.target.value)}
+                            placeholder="Ex : 7712575789"
+                            className="flex-1 py-1.5 px-2.5 rounded-lg bg-neutral-900 border border-neutral-700 text-xs text-white placeholder-neutral-500 font-mono focus:outline-none focus:border-amber-400"
+                          />
+                          <button
+                            onClick={handleAddManualChatId}
+                            disabled={!manualChatIdInput.trim()}
+                            className="py-1.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-neutral-950 text-xs font-semibold disabled:opacity-50 transition cursor-pointer shrink-0"
+                          >
+                            Associer
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <div className="flex flex-col gap-2">
