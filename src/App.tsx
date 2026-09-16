@@ -36,14 +36,12 @@ import {
   getCurfewCycleKey,
   getCurfewWindowStatus,
   confirmNightShutdownOnServer,
-  getPushSubscription,
-  syncSubscriptionWithServer,
-  subscribeToWebPush,
-  requestPhoneNotificationPermission,
-  detectMobilePushEnvironment,
+  syncCurfewScheduleWithServer,
+  fetchTelegramStatus,
+  TelegramStatus,
 } from './utils/notifications';
 import { playBedtimeChime, triggerBedtimeHaptic } from './utils/audio';
-import { Smartphone, Monitor, Moon, Power, ShieldCheck, BellRing, ChevronRight } from 'lucide-react';
+import { Smartphone, Monitor, Moon, Power, ShieldCheck, Send, ChevronRight } from 'lucide-react';
 
 export default function App() {
   const [stats, setStats] = useState<UserStats>(loadStats);
@@ -86,8 +84,7 @@ export default function App() {
   });
   const [activeFocusSession, setActiveFocusSession] = useState<FocusSession | null>(loadFocusSession);
   const [desktopPhoneFrame, setDesktopPhoneFrame] = useState(true);
-  const [mobilePushEnv, setMobilePushEnv] = useState(() => detectMobilePushEnvironment());
-  const [isPushSubscribed, setIsPushSubscribed] = useState(false);
+  const [telegramStatus, setTelegramStatus] = useState<TelegramStatus | null>(null);
 
   // Sync theme changes to html body background
   useEffect(() => {
@@ -271,40 +268,20 @@ export default function App() {
     setPreferences(newPrefs);
     savePreferences(newPrefs);
 
-    // Keep server push scheduler updated with new times/settings
-    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-      subscribeToWebPush(nextReminder).then((res) => {
-        if (res.success) setIsPushSubscribed(true);
-      }).catch(() => {});
-    } else {
-      getPushSubscription().then((sub) => {
-        if (sub) {
-          syncSubscriptionWithServer(sub, nextReminder);
-          setIsPushSubscribed(true);
-        }
-      });
-    }
+    // Keep server scheduler updated with new times/settings
+    syncCurfewScheduleWithServer(nextReminder);
   };
 
-  // Sync push settings and auto-subscribe if permission is already granted
+  // Sync curfew settings and query Telegram status on load/change
   useEffect(() => {
-    const env = detectMobilePushEnvironment();
-    setMobilePushEnv(env);
-
-    getPushSubscription().then((sub) => {
-      setIsPushSubscribed(Boolean(sub));
-      if (sub) {
-        syncSubscriptionWithServer(sub, preferences.disconnectReminder);
-      } else if (env.permission === 'granted' && preferences.disconnectReminder.enabled) {
-        subscribeToWebPush(preferences.disconnectReminder).then((res) => {
-          if (res.success) setIsPushSubscribed(true);
-        }).catch(() => {});
-      }
+    syncCurfewScheduleWithServer(preferences.disconnectReminder);
+    fetchTelegramStatus().then((status) => {
+      setTelegramStatus(status);
     });
   }, [preferences.disconnectReminder]);
 
   const curfewStatus = getCurfewWindowStatus(preferences.disconnectReminder);
-  const isCurfewWindowActive = curfewStatus.isWindowActive;
+  const isCurfewWindowActive = curfewStatus.isCurfewActive;
   const isCurfewConfirmedForNight = curfewConfirmedCycle === curfewStatus.cycleKey;
 
   const handleResetData = () => {
@@ -490,9 +467,9 @@ export default function App() {
                           }`}
                         >
                           {isCurfewWindowActive
-                            ? `Couvre-feu en cours (${curfewStatus.targetTimeStr}) • Stoppe les rappels`
+                            ? `Couvre-feu en cours (${curfewStatus.scheduledTime}) • Stoppe les rappels`
                             : preferences.disconnectReminder.enabled
-                            ? `Rappel prévu à ${curfewStatus.targetTimeStr} • Poser et couper les rappels`
+                            ? `Rappel prévu à ${curfewStatus.scheduledTime} • Poser et couper les rappels`
                             : 'Coupe les notifications pour ce soir'}
                         </span>
                       </div>
@@ -566,24 +543,12 @@ export default function App() {
                 isCurfewConfirmed={isCurfewConfirmedForNight}
               />
 
-              {/* Notification prompt banner if disconnect reminders enabled but notifications not active on phone */}
-              {preferences.disconnectReminder.enabled && !isCurfewConfirmedForNight && (
-                !isPushSubscribed || mobilePushEnv.permission !== 'granted' || (mobilePushEnv.isIOS && !mobilePushEnv.isStandalone)
-              ) && (
+              {/* Notification prompt banner if curfew enabled but Telegram not connected */}
+              {preferences.disconnectReminder.enabled && !isCurfewConfirmedForNight && (!telegramStatus?.configured || telegramStatus.subscribersCount === 0) && (
                 <div
-                  onClick={async () => {
+                  onClick={() => {
                     playMinimalClick(preferences.soundEnabled);
-                    if (mobilePushEnv.isIOS && !mobilePushEnv.isStandalone) {
-                      setIsDisconnectReminderOpen(true);
-                    } else {
-                      const granted = await requestPhoneNotificationPermission(preferences.disconnectReminder);
-                      const env = detectMobilePushEnvironment();
-                      setMobilePushEnv(env);
-                      if (granted) {
-                        const res = await subscribeToWebPush(preferences.disconnectReminder);
-                        if (res.success) setIsPushSubscribed(true);
-                      }
-                    }
+                    setIsDisconnectReminderOpen(true);
                   }}
                   className={`mt-3 mb-1 px-3.5 py-2 rounded-2xl border text-xs flex items-center justify-between gap-2.5 transition-all cursor-pointer shadow-xs ${
                     preferences.theme === 'light'
@@ -595,17 +560,15 @@ export default function App() {
                   id="banner-enable-offline-notifications"
                 >
                   <div className="flex items-center gap-2">
-                    <BellRing className="w-4 h-4 text-amber-400 shrink-0" />
+                    <Send className="w-4 h-4 text-amber-400 shrink-0" />
                     <span className="text-[11px] leading-tight">
-                      {mobilePushEnv.isIOS && !mobilePushEnv.isStandalone
-                        ? "iPhone : activez les alertes site fermé en ajoutant à l'écran d'accueil"
-                        : mobilePushEnv.permission === 'denied'
-                        ? "Notifications bloquées : autorisez-les pour recevoir les alertes site fermé"
-                        : "Activer les notifications téléphone (site fermé & écran éteint)"}
+                      {!telegramStatus?.configured
+                        ? "Connectez votre bot Telegram pour recevoir les alertes site fermé & écran en veille"
+                        : "Appuyez sur Démarrer (/start) dans votre bot Telegram pour relier ce téléphone"}
                     </span>
                   </div>
                   <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500 text-neutral-950 shrink-0 flex items-center gap-0.5">
-                    <span>{mobilePushEnv.isIOS && !mobilePushEnv.isStandalone ? 'Aide' : 'Activer'}</span>
+                    <span>Relier</span>
                     <ChevronRight className="w-3 h-3" />
                   </span>
                 </div>

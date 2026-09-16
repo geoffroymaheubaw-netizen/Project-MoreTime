@@ -68,6 +68,26 @@ export function saveTelegramSubscribers() {
   }
 }
 
+export function addOrUpdateSubscriber(
+  chatId: string,
+  name = 'Mon Téléphone',
+  username?: string
+): TelegramSubscriber {
+  const existing = subscribers.get(chatId);
+  const updated: TelegramSubscriber = {
+    chatId,
+    name: name || existing?.name || 'Mon Téléphone',
+    username: username || existing?.username,
+    enabled: true,
+    lastSentTimestamp: existing?.lastSentTimestamp,
+    lastSentCycle: existing?.lastSentCycle,
+    registeredAt: existing?.registeredAt || Date.now(),
+  };
+  subscribers.set(chatId, updated);
+  saveTelegramSubscribers();
+  return updated;
+}
+
 export function getBotToken(): string | null {
   return customBotToken || process.env.TELEGRAM_BOT_TOKEN?.trim() || null;
 }

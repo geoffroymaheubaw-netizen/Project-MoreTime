@@ -55,6 +55,7 @@ export interface DisconnectReminderSettings {
   customMessage: string;
   soundAlert: boolean;
   vibrateAlert: boolean;
+  userConfirmedNightCycle?: string;
 }
 
 export interface UserPreferences {

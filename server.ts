@@ -1,7 +1,6 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
-import webpush from 'web-push';
 import { createServer as createViteServer } from 'vite';
 import {
   isTelegramConfigured,
@@ -12,59 +11,16 @@ import {
   sendTestTelegramAlert,
   setBotToken,
   removeBotToken,
+  addOrUpdateSubscriber,
 } from './server/telegram.js';
 
 const PORT = 3000;
 const HOST = '0.0.0.0';
 
 // -----------------------------------------------------------------------------
-// VAPID Keys Setup for Background Web Push
+// Curfew Settings Storage (Dedicated for Telegram Reminders)
 // -----------------------------------------------------------------------------
-const VAPID_FILE = path.join(process.cwd(), 'vapid-keys.json');
-let vapidPublicKey = process.env.VAPID_PUBLIC_KEY || '';
-let vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || '';
-
-if (!vapidPublicKey || !vapidPrivateKey) {
-  try {
-    if (fs.existsSync(VAPID_FILE)) {
-      const content = JSON.parse(fs.readFileSync(VAPID_FILE, 'utf-8'));
-      vapidPublicKey = content.publicKey;
-      vapidPrivateKey = content.privateKey;
-    }
-  } catch (err) {
-    console.warn('Could not read vapid-keys.json, generating fresh keys:', err);
-  }
-
-  if (!vapidPublicKey || !vapidPrivateKey) {
-    vapidPublicKey =
-      'BOqosgxB-i2KnBDmDa3xdqAxkdfXwvidgeNMN09dRALQDvFu4wKMBf_6wORvxsupU-8K8Rzp0CBzGQ28LJjSFs4';
-    vapidPrivateKey = 'c9Q8xnm8dI4GiLoIW1tSLG5DMOssWo85Alt-BIW6wo8';
-    try {
-      fs.writeFileSync(
-        VAPID_FILE,
-        JSON.stringify({ publicKey: vapidPublicKey, privateKey: vapidPrivateKey }, null, 2),
-        'utf-8'
-      );
-      console.log('Saved default persistent VAPID keys in vapid-keys.json');
-    } catch (err) {
-      console.warn('Could not save vapid-keys.json:', err);
-    }
-  }
-}
-
-const vapidSubject = process.env.VAPID_SUBJECT || 'mailto:support@minimal-launcher.app';
-
-try {
-  webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
-  console.log('Web Push VAPID details successfully configured');
-} catch (err) {
-  console.error('Failed to configure Web Push VAPID details:', err);
-}
-
-// -----------------------------------------------------------------------------
-// Push Subscription Storage & Types
-// -----------------------------------------------------------------------------
-interface SubscriberSettings {
+export interface CurfewSettings {
   enabled: boolean;
   time?: string;
   weekdayTime?: string;
@@ -74,55 +30,14 @@ interface SubscriberSettings {
   days: number[];
   repeatIntervalMinutes?: number;
   customMessage?: string;
-  timezoneOffset: number; // in minutes (e.g. -120)
+  timezoneOffset: number; // in minutes (e.g. -120 for UTC+2 Paris)
   userConfirmedNightCycle?: string | null;
   lastPushTimestamp?: number;
   lastPushCycle?: string;
 }
 
-interface StoredSubscriber {
-  id: string;
-  subscription: webpush.PushSubscription;
-  settings: SubscriberSettings;
-  createdAt: number;
-  updatedAt: number;
-}
-
-const SUBSCRIPTIONS_FILE = path.join(process.cwd(), 'push-subscriptions.json');
-let subscribers: Map<string, StoredSubscriber> = new Map();
-
-function loadSubscribersFromDisk() {
-  try {
-    if (fs.existsSync(SUBSCRIPTIONS_FILE)) {
-      const data: StoredSubscriber[] = JSON.parse(fs.readFileSync(SUBSCRIPTIONS_FILE, 'utf-8'));
-      subscribers = new Map(data.map((sub) => [sub.id, sub]));
-      console.log(`Loaded ${subscribers.size} push subscriptions from disk`);
-    }
-  } catch (err) {
-    console.warn('Could not read push-subscriptions.json:', err);
-  }
-}
-
-function saveSubscribersToDisk() {
-  try {
-    const data = Array.from(subscribers.values());
-    fs.writeFileSync(SUBSCRIPTIONS_FILE, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (err) {
-    console.warn('Could not save push-subscriptions.json:', err);
-  }
-}
-
-loadSubscribersFromDisk();
-
-function getSubscriptionId(sub: webpush.PushSubscription): string {
-  return Buffer.from(sub.endpoint).toString('base64').slice(-32);
-}
-
-// -----------------------------------------------------------------------------
-// Global Curfew Settings Storage (shared for Telegram & Web Push)
-// -----------------------------------------------------------------------------
 const CURFEW_FILE = path.join(process.cwd(), 'curfew-settings.json');
-let globalCurfewSettings: SubscriberSettings = {
+let globalCurfewSettings: CurfewSettings = {
   enabled: true,
   time: '21:30',
   weekdayTime: '21:30',
@@ -131,7 +46,7 @@ let globalCurfewSettings: SubscriberSettings = {
   days: [1, 2, 3, 4, 5, 6, 0],
   repeatIntervalMinutes: 10,
   customMessage: "Il est l'heure de déconnecter et de reposer votre esprit.",
-  timezoneOffset: 0,
+  timezoneOffset: -120, // Default to Europe/Paris (UTC+2 in summer, UTC+1 in winter)
   userConfirmedNightCycle: null,
   lastPushTimestamp: 0,
   lastPushCycle: '',
@@ -160,10 +75,10 @@ function saveCurfewSettings() {
 loadCurfewSettings();
 
 // -----------------------------------------------------------------------------
-// Curfew Evaluation Logic on Server (runs even when phone/browser is closed)
+// Curfew Evaluation Logic
 // -----------------------------------------------------------------------------
 function resolveScheduledTimeForUser(
-  settings: SubscriberSettings,
+  settings: CurfewSettings,
   userDayIndex: number
 ): { enabled: boolean; time: string } {
   const mode = settings.scheduleMode || 'weekdays_weekend';
@@ -205,42 +120,8 @@ function computeCycleKey(userDate: Date, targetTimeStr: string): string {
   return `${y}-${m}-${day}`;
 }
 
-async function sendWebPushToSubscriber(
-  sub: StoredSubscriber,
-  title: string,
-  body: string,
-  cycleKey?: string
-): Promise<boolean> {
-  const payload = JSON.stringify({
-    title,
-    body,
-    tag: 'curfew-disconnect',
-    url: '/',
-    cycleKey,
-    timestamp: Date.now(),
-  });
-
-  try {
-    await webpush.sendNotification(sub.subscription, payload, {
-      TTL: 3600, // 1 hour TTL
-      urgency: 'high',
-    });
-    console.log(`[Push] Delivered push notification to ${sub.id.slice(0, 8)}: "${title}"`);
-    return true;
-  } catch (error: any) {
-    console.warn(`[Push Error] for ${sub.id.slice(0, 8)}:`, error?.statusCode || error?.message);
-    // If subscription is expired or unregistered on device (404/410), delete it
-    if (error?.statusCode === 404 || error?.statusCode === 410) {
-      subscribers.delete(sub.id);
-      saveSubscribersToDisk();
-      console.log(`Cleaned up expired subscription ${sub.id.slice(0, 8)}`);
-    }
-    return false;
-  }
-}
-
 function evaluateSubscriberCurfew(
-  settings: SubscriberSettings,
+  settings: CurfewSettings,
   now: Date
 ): {
   isCurfewActive: boolean;
@@ -248,14 +129,15 @@ function evaluateSubscriberCurfew(
   scheduledTime: string;
   minutesElapsed: number;
 } {
-  // Convert UTC server time to user's local time using their reported timezoneOffset (in minutes)
-  const userLocalMs = now.getTime() - settings.timezoneOffset * 60000;
+  // Convert UTC server time to user's local time using timezoneOffset in minutes
+  const offset = typeof settings.timezoneOffset === 'number' ? settings.timezoneOffset : -120;
+  const userLocalMs = now.getTime() - offset * 60000;
   const userLocalDate = new Date(userLocalMs);
 
   const todayIndex = userLocalDate.getUTCDay();
   const currentHour = userLocalDate.getUTCHours();
 
-  // 1. Check early morning (< 06:00) continuation of yesterday's evening curfew
+  // 1. Check early morning continuation (< 06:00) of yesterday's curfew
   if (currentHour < 6) {
     const yesterdayIndex = (todayIndex + 6) % 7;
     const yesterdaySchedule = resolveScheduledTimeForUser(settings, yesterdayIndex);
@@ -268,7 +150,6 @@ function evaluateSubscriberCurfew(
 
         const diffYMs = userLocalMs - yDate.getTime();
         const yMinutesElapsed = Math.floor(diffYMs / 60000);
-        // Active from yesterday evening until 06:00 AM next morning (max 10 hours)
         if (diffYMs >= 0 && diffYMs <= 10 * 3600 * 1000) {
           const cycleKey = computeCycleKey(userLocalDate, yesterdaySchedule.time);
           return {
@@ -311,11 +192,114 @@ function evaluateSubscriberCurfew(
   };
 }
 
-// Background scheduler checking every 20 seconds
+/**
+ * Evaluates the curfew conditions and dispatches Telegram notification if active.
+ * Safe to be called continuously in a background loop or triggered via cron endpoint.
+ */
+export async function evaluateAndSendCurfewAlerts(now: Date = new Date()): Promise<{
+  isCurfewActive: boolean;
+  sent: boolean;
+  message?: string;
+  details?: any;
+}> {
+  const telegramSubscribers = getTelegramSubscribers();
+  if (!isTelegramConfigured() || telegramSubscribers.length === 0 || !globalCurfewSettings.enabled) {
+    return {
+      isCurfewActive: false,
+      sent: false,
+      message: !isTelegramConfigured()
+        ? 'Bot Telegram non configuré'
+        : telegramSubscribers.length === 0
+        ? 'Aucun abonné Telegram actif'
+        : 'Couvre-feu désactivé',
+    };
+  }
+
+  const tgEvaluation = evaluateSubscriberCurfew(globalCurfewSettings, now);
+  if (!tgEvaluation.isCurfewActive) {
+    return {
+      isCurfewActive: false,
+      sent: false,
+      message: `En attente du couvre-feu (${tgEvaluation.scheduledTime}).`,
+      details: tgEvaluation,
+    };
+  }
+
+  const { cycleKey, minutesElapsed } = tgEvaluation;
+  if (globalCurfewSettings.userConfirmedNightCycle === cycleKey) {
+    return {
+      isCurfewActive: true,
+      sent: false,
+      message: `Couvre-feu déjà confirmé pour la nuit (${cycleKey})`,
+      details: tgEvaluation,
+    };
+  }
+
+  const hasTriggeredInCycle =
+    globalCurfewSettings.lastPushCycle === cycleKey &&
+    typeof globalCurfewSettings.lastPushTimestamp === 'number' &&
+    globalCurfewSettings.lastPushTimestamp > 0;
+
+  const intervalMinutes = globalCurfewSettings.repeatIntervalMinutes || 10;
+  const intervalMs = intervalMinutes * 60 * 1000;
+
+  let shouldSendTelegram = false;
+  let tgText = '';
+
+  if (!hasTriggeredInCycle) {
+    shouldSendTelegram = true;
+    tgText =
+      `🌙 <b>Il est l'heure de déconnecter</b>\n\n` +
+      (globalCurfewSettings.customMessage || "Il est l'heure de lâcher votre téléphone et de reposer votre esprit.") +
+      (minutesElapsed > 0 ? `\n\n<i>Couvre-feu dépassé de ${minutesElapsed} min.</i>` : '') +
+      `\n\nAppuyez sur le bouton ci-dessous lorsque vous posez votre téléphone :`;
+  } else {
+    const elapsed = Date.now() - (globalCurfewSettings.lastPushTimestamp || 0);
+    if (elapsed >= intervalMs) {
+      shouldSendTelegram = true;
+      tgText =
+        `🌙 <b>Rappel de déconnexion (+${minutesElapsed}m)</b>\n\n` +
+        `Votre écran est toujours allumé. Posez votre téléphone pour une nuit réparatrice !\n\n` +
+        `Appuyez sur le bouton ci-dessous pour couper les rappels cette nuit :`;
+    }
+  }
+
+  if (shouldSendTelegram) {
+    console.log(`[Telegram Curfew] Delivering reminder to ${telegramSubscribers.length} subscriber(s)`);
+    let sentCount = 0;
+    for (const tgSub of telegramSubscribers) {
+      const res = await sendTelegramMessage(tgSub.chatId, tgText, {
+        withStopButton: true,
+        cycleKey,
+      });
+      if (res.success) sentCount++;
+    }
+    globalCurfewSettings.lastPushTimestamp = Date.now();
+    globalCurfewSettings.lastPushCycle = cycleKey;
+    saveCurfewSettings();
+    return {
+      isCurfewActive: true,
+      sent: true,
+      message: `Alerte Telegram envoyée à ${sentCount} destinataire(s)`,
+      details: tgEvaluation,
+    };
+  }
+
+  return {
+    isCurfewActive: true,
+    sent: false,
+    message: 'Alerte déjà envoyée récemment pour ce cycle',
+    details: tgEvaluation,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Background Loop (Runs 24/7 on Node.js container)
+// -----------------------------------------------------------------------------
 setInterval(async () => {
   const now = new Date();
 
-  // 1. Poll Telegram updates (new subscribers or button clicks)
+  // 1. Poll Telegram updates (process /start and "J'arrête mon téléphone" button taps)
   if (isTelegramConfigured()) {
     await pollTelegramUpdates((confirmedCycleKey) => {
       const cycle =
@@ -324,138 +308,23 @@ setInterval(async () => {
         `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
       globalCurfewSettings.userConfirmedNightCycle = cycle;
       saveCurfewSettings();
-      for (const sub of subscribers.values()) {
-        sub.settings.userConfirmedNightCycle = cycle;
-        sub.updatedAt = Date.now();
-      }
-      saveSubscribersToDisk();
       console.log(`[Telegram Curfew] Night cycle ${cycle} confirmed via Telegram button`);
     });
   }
 
-  // 2. Evaluate Telegram Curfew notifications
-  const telegramSubscribers = getTelegramSubscribers();
-  if (isTelegramConfigured() && telegramSubscribers.length > 0 && globalCurfewSettings.enabled) {
-    const tgEvaluation = evaluateSubscriberCurfew(globalCurfewSettings, now);
-    if (tgEvaluation.isCurfewActive) {
-      const { cycleKey, minutesElapsed } = tgEvaluation;
-      if (globalCurfewSettings.userConfirmedNightCycle !== cycleKey) {
-        const hasTriggeredInCycle =
-          globalCurfewSettings.lastPushCycle === cycleKey &&
-          typeof globalCurfewSettings.lastPushTimestamp === 'number' &&
-          globalCurfewSettings.lastPushTimestamp > 0;
-
-        const intervalMinutes = globalCurfewSettings.repeatIntervalMinutes || 10;
-        const intervalMs = intervalMinutes * 60 * 1000;
-
-        let shouldSendTelegram = false;
-        let tgText = '';
-
-        if (!hasTriggeredInCycle) {
-          shouldSendTelegram = true;
-          tgText =
-            `🌙 <b>Il est l'heure de déconnecter</b>\n\n` +
-            (globalCurfewSettings.customMessage || "Il est l'heure de lâcher votre téléphone et de reposer votre esprit.") +
-            (minutesElapsed > 0 ? `\n\n<i>Couvre-feu dépassé de ${minutesElapsed} min.</i>` : '') +
-            `\n\nAppuyez sur le bouton ci-dessous lorsque vous posez votre téléphone :`;
-        } else {
-          const elapsed = Date.now() - (globalCurfewSettings.lastPushTimestamp || 0);
-          if (elapsed >= intervalMs) {
-            shouldSendTelegram = true;
-            tgText =
-              `🌙 <b>Rappel de déconnexion (+${minutesElapsed}m)</b>\n\n` +
-              `Votre écran est toujours allumé. Posez votre téléphone pour une nuit réparatrice !\n\n` +
-              `Appuyez sur le bouton ci-dessous pour couper les rappels cette nuit :`;
-          }
-        }
-
-        if (shouldSendTelegram) {
-          console.log(`[Telegram] Sending curfew reminder to ${telegramSubscribers.length} subscribers`);
-          for (const tgSub of telegramSubscribers) {
-            await sendTelegramMessage(tgSub.chatId, tgText, {
-              withStopButton: true,
-              cycleKey,
-            });
-          }
-          globalCurfewSettings.lastPushTimestamp = Date.now();
-          globalCurfewSettings.lastPushCycle = cycleKey;
-          saveCurfewSettings();
-        }
-      }
-    }
-  }
-
-  // 3. Evaluate Web Push subscribers
-  if (subscribers.size > 0) {
-    let hasChanges = false;
-    for (const [id, sub] of subscribers.entries()) {
-      const { settings } = sub;
-      if (!settings.enabled) continue;
-
-      const evaluation = evaluateSubscriberCurfew(settings, now);
-      if (!evaluation.isCurfewActive) continue;
-
-      const { cycleKey, minutesElapsed } = evaluation;
-
-      // If user already pressed "J'arrête mon téléphone" on site or Telegram for this cycle, skip
-      if (settings.userConfirmedNightCycle === cycleKey) {
-        continue;
-      }
-
-      const hasTriggeredInCycle =
-        settings.lastPushCycle === cycleKey &&
-        typeof settings.lastPushTimestamp === 'number' &&
-        settings.lastPushTimestamp > 0;
-
-      const intervalMinutes =
-        settings.repeatIntervalMinutes && settings.repeatIntervalMinutes > 0
-          ? settings.repeatIntervalMinutes
-          : 10;
-      const intervalMs = intervalMinutes * 60 * 1000;
-
-      let shouldSend = false;
-      let pushTitle = '🌙 Lâchez votre téléphone';
-      let pushBody = settings.customMessage || "Il est l'heure de déconnecter et de reposer votre esprit.";
-
-      if (!hasTriggeredInCycle) {
-        shouldSend = true;
-        if (minutesElapsed > 0) {
-          pushBody = `Couvre-feu dépassé (+${minutesElapsed}m) : posez votre écran et profitez d'une nuit paisible.`;
-        }
-      } else {
-        const elapsedSinceLast = Date.now() - settings.lastPushTimestamp!;
-        if (elapsedSinceLast >= intervalMs) {
-          shouldSend = true;
-          pushTitle = '🌙 Rappel de déconnexion';
-          pushBody = `Rappel (+${minutesElapsed}m) : lâchez votre téléphone. Ouvrez Minimal et confirmez pour couper les rappels.`;
-        }
-      }
-
-      if (shouldSend) {
-        const sent = await sendWebPushToSubscriber(sub, pushTitle, pushBody, cycleKey);
-        if (sent) {
-          sub.settings.lastPushTimestamp = Date.now();
-          sub.settings.lastPushCycle = cycleKey;
-          sub.updatedAt = Date.now();
-          hasChanges = true;
-        }
-      }
-    }
-
-    if (hasChanges) {
-      saveSubscribersToDisk();
-    }
-  }
+  // 2. Evaluate Curfew notifications
+  await evaluateAndSendCurfewAlerts(now);
 }, 20000);
 
 // -----------------------------------------------------------------------------
-// Express App & API Endpoints
+// Express Server Setup
 // -----------------------------------------------------------------------------
 async function startServer() {
   const app = express();
+
   app.use(express.json());
 
-  // Enable CORS for API routes so requests from iframes, previews, or PWA origins never get blocked
+  // CORS middleware
   app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -466,150 +335,7 @@ async function startServer() {
     next();
   });
 
-  // 1. Return VAPID Public Key for client subscription
-  const getVapidKeyHandler = (_req: express.Request, res: express.Response) => {
-    res.json({
-      publicKey: vapidPublicKey,
-      status: 'active',
-    });
-  };
-  app.get('/api/push/vapid-public-key', getVapidKeyHandler);
-  app.get('/api/push/public-key', getVapidKeyHandler);
-
-  // 2. Subscribe endpoint
-  app.post('/api/push/subscribe', (req, res) => {
-    const { subscription, settings } = req.body;
-    if (!subscription || !subscription.endpoint) {
-      return res.status(400).json({ error: 'Invalid PushSubscription object' });
-    }
-
-    const id = getSubscriptionId(subscription);
-    const existing = subscribers.get(id);
-
-    const updatedSubscriber: StoredSubscriber = {
-      id,
-      subscription,
-      settings: {
-        enabled: settings?.enabled ?? true,
-        time: settings?.time || '21:30',
-        weekdayTime: settings?.weekdayTime || '21:30',
-        weekendTime: settings?.weekendTime || '23:00',
-        scheduleMode: settings?.scheduleMode || 'weekdays_weekend',
-        dayTimes: settings?.dayTimes,
-        days: settings?.days || [1, 2, 3, 4, 5, 6, 0],
-        repeatIntervalMinutes: settings?.repeatIntervalMinutes || 10,
-        customMessage: settings?.customMessage,
-        timezoneOffset: typeof settings?.timezoneOffset === 'number' ? settings.timezoneOffset : new Date().getTimezoneOffset(),
-        userConfirmedNightCycle: existing?.settings.userConfirmedNightCycle || null,
-        lastPushTimestamp: existing?.settings.lastPushTimestamp,
-        lastPushCycle: existing?.settings.lastPushCycle,
-      },
-      createdAt: existing?.createdAt || Date.now(),
-      updatedAt: Date.now(),
-    };
-
-    subscribers.set(id, updatedSubscriber);
-    saveSubscribersToDisk();
-
-    console.log(`[Push] Registered subscriber ${id.slice(0, 8)}. Total subscribers: ${subscribers.size}`);
-    res.json({ success: true, id, subscribersCount: subscribers.size });
-  });
-
-  // 3. Unsubscribe endpoint
-  app.post('/api/push/unsubscribe', (req, res) => {
-    const { subscription } = req.body;
-    if (!subscription || !subscription.endpoint) {
-      return res.status(400).json({ error: 'Invalid subscription' });
-    }
-    const id = getSubscriptionId(subscription);
-    const deleted = subscribers.delete(id);
-    if (deleted) {
-      saveSubscribersToDisk();
-      console.log(`[Push] Unsubscribed ${id.slice(0, 8)}`);
-    }
-    res.json({ success: true });
-  });
-
-  // 4. Test Push (allows immediate or delayed push to test phone closed/locked screen)
-  app.post('/api/push/test', async (req, res) => {
-    const { subscription, delaySeconds = 0, message } = req.body;
-    if (!subscription || !subscription.endpoint) {
-      return res.status(400).json({ error: 'Missing subscription parameter' });
-    }
-
-    const title = '🌙 Test de notification (site fermé)';
-    const body =
-      message ||
-      'Félicitations ! Les notifications fonctionnent sur votre téléphone même quand le site est fermé.';
-
-    const id = getSubscriptionId(subscription);
-    const subObj: StoredSubscriber = subscribers.get(id) || {
-      id,
-      subscription,
-      settings: {
-        enabled: true,
-        days: [0, 1, 2, 3, 4, 5, 6],
-        timezoneOffset: 0,
-      },
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-
-    if (delaySeconds > 0) {
-      res.json({
-        success: true,
-        message: `Notification programmée dans ${delaySeconds} secondes. Vous pouvez maintenant fermer l'application ou verrouiller votre écran !`,
-        delaySeconds,
-      });
-
-      setTimeout(async () => {
-        await sendWebPushToSubscriber(subObj, title, body);
-      }, delaySeconds * 1000);
-    } else {
-      const sent = await sendWebPushToSubscriber(subObj, title, body);
-      res.json({ success: sent });
-    }
-  });
-
-  // 5. Confirm night shutdown from notification action or in-app button
-  const confirmNightHandler = (req: express.Request, res: express.Response) => {
-    const { subscription, cycleKey } = req.body;
-    let targetCycle = cycleKey;
-
-    if (!targetCycle) {
-      const now = new Date();
-      targetCycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    }
-
-    // Update global curfew state
-    globalCurfewSettings.userConfirmedNightCycle = targetCycle;
-    saveCurfewSettings();
-
-    // Update specific or all web push subscriptions
-    if (subscription && subscription.endpoint) {
-      const id = getSubscriptionId(subscription);
-      const sub = subscribers.get(id);
-      if (sub) {
-        sub.settings.userConfirmedNightCycle = targetCycle;
-        sub.updatedAt = Date.now();
-        saveSubscribersToDisk();
-      }
-    } else {
-      for (const sub of subscribers.values()) {
-        sub.settings.userConfirmedNightCycle = targetCycle;
-        sub.updatedAt = Date.now();
-      }
-      saveSubscribersToDisk();
-    }
-
-    console.log(`[Curfew] Night cycle ${targetCycle} confirmed by user`);
-    res.json({ success: true, confirmedCycle: targetCycle });
-  };
-
-  app.post('/api/push/confirm-night', confirmNightHandler);
-  app.post('/api/curfew/confirm-night', confirmNightHandler);
-
-  // 6. Global Curfew Settings API
+  // 1. Curfew Settings API
   app.get('/api/curfew/settings', (_req, res) => {
     res.json({ success: true, settings: globalCurfewSettings });
   });
@@ -626,19 +352,86 @@ async function startServer() {
             : globalCurfewSettings.timezoneOffset,
       };
       saveCurfewSettings();
-
-      // Synchronize with active push subscribers
-      for (const sub of subscribers.values()) {
-        sub.settings = { ...sub.settings, ...settings };
-        sub.updatedAt = Date.now();
-      }
-      saveSubscribersToDisk();
-      console.log('[Curfew] Updated global schedule settings');
+      console.log('[Curfew] Synchronized schedule settings with client');
     }
     res.json({ success: true, settings: globalCurfewSettings });
   });
 
-  // 7. Telegram Bot API endpoints
+  // 2. Night shutdown confirmation
+  app.post('/api/curfew/confirm-night', (req, res) => {
+    const { cycleKey } = req.body;
+    let targetCycle = cycleKey;
+    if (!targetCycle) {
+      const now = new Date();
+      targetCycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    }
+    globalCurfewSettings.userConfirmedNightCycle = targetCycle;
+    saveCurfewSettings();
+    console.log(`[Curfew] Night cycle ${targetCycle} confirmed by user`);
+    res.json({ success: true, confirmedCycle: targetCycle });
+  });
+
+  // 3. Trigger / evaluate curfew manually or via Cron
+  const curfewCheckHandler = async (_req: express.Request, res: express.Response) => {
+    try {
+      const result = await evaluateAndSendCurfewAlerts(new Date());
+      res.json({ success: true, result });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'Erreur vérification couvre-feu' });
+    }
+  };
+  app.get('/api/curfew/check', curfewCheckHandler);
+  app.post('/api/curfew/check', curfewCheckHandler);
+  app.get('/api/curfew/cron', curfewCheckHandler);
+
+  // 4. Delayed Test: sends a Telegram notification after delaySeconds (e.g. 10s)
+  // This allows the user to lock their screen or close the browser and verify receipt!
+  app.post('/api/curfew/delayed-test', (req, res) => {
+    const { delaySeconds = 10, chatId } = req.body;
+    const subs = getTelegramSubscribers();
+    const targetChatId = chatId || (subs.length > 0 ? subs[0].chatId : undefined);
+
+    if (!targetChatId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Aucun Chat ID Telegram disponible. Veuillez valider votre bot d’abord.',
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Alerte programmée dans ${delaySeconds} secondes. Verrouillez votre écran dès maintenant !`,
+      delaySeconds,
+    });
+
+    setTimeout(async () => {
+      console.log(`[Telegram Test] Delivering delayed test notification to ${targetChatId}`);
+      await sendTelegramMessage(
+        targetChatId,
+        `🔔 <b>Test écran verrouillé & site fermé réussi !</b>\n\n` +
+          `Ce message Telegram vous prouve que vos rappels fonctionnent parfaitement même lorsque le site est fermé et votre téléphone en veille.\n\n` +
+          `À l'heure de votre couvre-feu, votre bot vous préviendra de la même manière.`,
+        { withStopButton: true, cycleKey: 'test-cycle' }
+      );
+    }, Math.max(1, delaySeconds) * 1000);
+  });
+
+  // 5. Telegram Subscribers enrollment
+  app.post('/api/telegram/subscribers', (req, res) => {
+    try {
+      const { chatId, name, username } = req.body;
+      if (!chatId) {
+        return res.status(400).json({ success: false, error: 'Chat ID requis' });
+      }
+      const subscriber = addOrUpdateSubscriber(String(chatId), name, username);
+      console.log(`[Telegram] Enrolled subscriber from client: ${subscriber.name} (${subscriber.chatId})`);
+      res.json({ success: true, subscriber });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'Erreur enregistrement abonné' });
+    }
+  });
+
+  // 6. Telegram Bot API endpoints
   app.get('/api/telegram/status', async (_req, res) => {
     try {
       const botInfo = await getBotInfo();
@@ -669,11 +462,6 @@ async function startServer() {
           `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
         globalCurfewSettings.userConfirmedNightCycle = cycle;
         saveCurfewSettings();
-        for (const sub of subscribers.values()) {
-          sub.settings.userConfirmedNightCycle = cycle;
-          sub.updatedAt = Date.now();
-        }
-        saveSubscribersToDisk();
       });
       const botInfo = await getBotInfo();
       const subs = getTelegramSubscribers();
@@ -705,7 +493,6 @@ async function startServer() {
     }
   });
 
-  // Save / set bot token directly from UI
   app.post('/api/telegram/token', async (req, res) => {
     try {
       const { token } = req.body;
@@ -725,20 +512,9 @@ async function startServer() {
     }
   });
 
-  // Remove bot token from UI
   app.delete('/api/telegram/token', (_req, res) => {
     const success = removeBotToken();
     res.json({ success, configured: false });
-  });
-
-  // 8. Push status info
-  app.get('/api/push/status', (_req, res) => {
-    res.json({
-      vapidConfigured: Boolean(vapidPublicKey && vapidPrivateKey),
-      subscribersCount: subscribers.size,
-      telegramConfigured: isTelegramConfigured(),
-      serverTime: new Date().toISOString(),
-    });
   });
 
   // Health route
@@ -746,6 +522,7 @@ async function startServer() {
     res.json({
       status: 'ok',
       telegramConfigured: isTelegramConfigured(),
+      subscribersCount: getTelegramSubscribers().length,
       serverTime: new Date().toISOString(),
     });
   });
