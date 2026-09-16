@@ -953,6 +953,37 @@ export async function testTelegramAlert(chatId?: string): Promise<{ success: boo
 }
 
 /**
+ * Save Telegram bot token entered by user directly in the UI
+ */
+export async function saveTelegramToken(
+  token: string
+): Promise<{ success: boolean; botUsername?: string; botFirstName?: string; error?: string }> {
+  try {
+    const res = await fetch('/api/telegram/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    const data = await res.json();
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Erreur réseau vers le serveur' };
+  }
+}
+
+/**
+ * Remove Telegram bot token
+ */
+export async function deleteTelegramToken(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/telegram/token', { method: 'DELETE' });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Syncs the curfew schedule with the server for Telegram and background dispatch
  */
 export async function syncCurfewScheduleWithServer(

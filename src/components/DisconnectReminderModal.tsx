@@ -24,6 +24,9 @@ import {
   ExternalLink,
   RefreshCw,
   MessageSquare,
+  Key,
+  Trash2,
+  Edit2,
 } from 'lucide-react';
 import {
   DisconnectReminderSettings,
@@ -49,6 +52,8 @@ import {
   syncTelegramSubscribers,
   testTelegramAlert,
   syncCurfewScheduleWithServer,
+  saveTelegramToken,
+  deleteTelegramToken,
   TelegramStatus,
 } from '../utils/notifications';
 
@@ -110,6 +115,14 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
   const [isSyncingTelegram, setIsSyncingTelegram] = useState<boolean>(false);
   const [isTestingTelegram, setIsTestingTelegram] = useState<boolean>(false);
   const [telegramFeedback, setTelegramFeedback] = useState<string | null>(null);
+
+  // Bot token direct input state
+  const [botTokenInput, setBotTokenInput] = useState<string>('');
+  const [isSavingToken, setIsSavingToken] = useState<boolean>(false);
+  const [showTokenEditor, setShowTokenEditor] = useState<boolean>(false);
+  const [tokenError, setTokenError] = useState<string | null>(null);
+  const [tokenSuccess, setTokenSuccess] = useState<string | null>(null);
+  const [showBotFatherSteps, setShowBotFatherSteps] = useState<boolean>(false);
 
   // Sync state on open
   React.useEffect(() => {
@@ -189,6 +202,50 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
       setTelegramFeedback(err?.message || "Erreur lors du test Telegram.");
     } finally {
       setIsTestingTelegram(false);
+    }
+  };
+
+  const handleSaveBotToken = async () => {
+    const trimmed = botTokenInput.trim();
+    if (!trimmed) {
+      setTokenError("Veuillez saisir ou coller votre jeton (Token) Telegram.");
+      return;
+    }
+    setIsSavingToken(true);
+    setTokenError(null);
+    setTokenSuccess(null);
+    playMinimalClick(soundEnabled);
+    try {
+      const res = await saveTelegramToken(trimmed);
+      if (res.success) {
+        setTokenSuccess(`Bot @${res.botUsername} connecté avec succès !`);
+        setBotTokenInput('');
+        setShowTokenEditor(false);
+        const updated = await fetchTelegramStatus();
+        setTelegramStatus(updated);
+      } else {
+        setTokenError(res.error || "Token invalide ou non reconnu par Telegram.");
+      }
+    } catch (err: any) {
+      setTokenError(err?.message || "Erreur lors de l'enregistrement du token.");
+    } finally {
+      setIsSavingToken(false);
+    }
+  };
+
+  const handleRemoveBotToken = async () => {
+    playMinimalClick(soundEnabled);
+    setIsSavingToken(true);
+    try {
+      await deleteTelegramToken();
+      const updated = await fetchTelegramStatus();
+      setTelegramStatus(updated);
+      setShowTokenEditor(false);
+      setTokenSuccess(null);
+      setTokenError(null);
+      setTelegramFeedback(null);
+    } finally {
+      setIsSavingToken(false);
     }
   };
 
@@ -1103,21 +1160,23 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
               <strong className="text-neutral-200">systématiquement</strong>, même écran verrouillé et navigateur fermé.
             </p>
 
-            {/* BOT CONFIGURED STATE */}
-            {telegramStatus?.configured ? (
+            {/* BOT CONFIGURED & NOT IN EDIT MODE */}
+            {telegramStatus?.configured && !showTokenEditor ? (
               <div className="flex flex-col gap-2.5">
                 <div className="p-2.5 rounded-xl bg-neutral-950/50 border border-neutral-800 text-[11px] flex flex-col gap-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-neutral-400">Bot connecté au serveur :</span>
-                    <a
-                      href={`https://t.me/${telegramStatus.botUsername}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-mono text-amber-400 hover:underline flex items-center gap-1"
-                    >
-                      @{telegramStatus.botUsername}
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
+                    <span className="text-neutral-400">Bot connecté :</span>
+                    <div className="flex items-center gap-2">
+                      <a
+                        href={`https://t.me/${telegramStatus.botUsername}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-mono text-amber-400 hover:underline flex items-center gap-1 font-semibold"
+                      >
+                        @{telegramStatus.botUsername}
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
                   </div>
 
                   <div className="flex items-center justify-between pt-1 border-t border-neutral-800/60">
@@ -1151,17 +1210,37 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
                       ))}
                     </div>
                   )}
+
+                  <div className="pt-1 border-t border-neutral-800/60 flex items-center justify-between text-[11px]">
+                    <button
+                      onClick={() => {
+                        playMinimalClick(soundEnabled);
+                        setShowTokenEditor(true);
+                        setTokenError(null);
+                        setTokenSuccess(null);
+                      }}
+                      className="text-amber-400 hover:text-amber-300 flex items-center gap-1 cursor-pointer"
+                    >
+                      <Edit2 className="w-3 h-3" />
+                      <span>Modifier le token</span>
+                    </button>
+                    <button
+                      onClick={handleRemoveBotToken}
+                      className="text-neutral-500 hover:text-red-400 flex items-center gap-1 cursor-pointer transition"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      <span>Dissocier le bot</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* If no subscriber yet, prompt to click link and start */}
                 {telegramStatus.subscribersCount === 0 ? (
                   <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 flex flex-col gap-2 text-[11px]">
                     <strong className="text-white font-medium">Reliez votre Telegram en 2 étapes :</strong>
-                    <ol className="list-decimal list-inside space-y-1 text-neutral-300">
-                      <li>
-                        Touchez le bouton ci-dessous pour ouvrir votre bot :
-                      </li>
-                    </ol>
+                    <div className="text-neutral-300">
+                      1. Touchez le bouton ci-dessous pour ouvrir votre bot :
+                    </div>
 
                     <a
                       href={`https://t.me/${telegramStatus.botUsername}?start=minimal`}
@@ -1210,46 +1289,123 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
                 )}
               </div>
             ) : (
-              /* BOT NOT CONFIGURED STEP-BY-STEP */
-              <div className="flex flex-col gap-2.5">
-                <div className="p-3 rounded-xl bg-neutral-950/60 border border-neutral-800 text-[11px] text-neutral-300 flex flex-col gap-2">
-                  <div className="font-semibold text-amber-400 flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>Création de votre Bot Telegram (1 minute, 100% gratuit) :</span>
+              /* BOT NOT CONFIGURED OR EDITING TOKEN DIRECTLY IN UI */
+              <div className="flex flex-col gap-3">
+                <div className="p-3.5 rounded-xl bg-neutral-950/70 border border-neutral-800 flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 font-medium text-xs text-amber-400">
+                      <Key className="w-4 h-4 text-amber-400 shrink-0" />
+                      <span className="font-semibold text-white">Écrire votre Token de bot Telegram :</span>
+                    </div>
+                    {telegramStatus?.configured && (
+                      <button
+                        onClick={() => {
+                          playMinimalClick(soundEnabled);
+                          setShowTokenEditor(false);
+                          setTokenError(null);
+                        }}
+                        className="text-[11px] text-neutral-400 hover:text-neutral-200 cursor-pointer"
+                      >
+                        Annuler
+                      </button>
+                    )}
                   </div>
 
-                  <ol className="list-decimal list-inside space-y-1.5 leading-relaxed text-neutral-300">
-                    <li>
-                      Sur votre téléphone, ouvrez l'application <strong>Telegram</strong> et cherchez{' '}
-                      <strong className="text-white">@BotFather</strong>.
-                    </li>
-                    <li>
-                      Envoyez-lui le message <code className="text-amber-400 font-mono">/newbot</code>.
-                    </li>
-                    <li>
-                      Donnez-lui un nom (ex: <span className="text-white">Mon Rappel</span>), puis un identifiant finissant par <em>bot</em> (ex: <span className="text-white">geoffroy_rappel_bot</span>).
-                    </li>
-                    <li>
-                      BotFather vous renvoie un message avec votre <strong>HTTP API token</strong> (ex: <code className="text-amber-300 font-mono">7123456789:AAH...</code>).
-                    </li>
-                    <li>
-                      Dans Google AI Studio, ouvrez les <strong>Settings / Secrets</strong> de l'application et ajoutez :
-                      <div className="mt-1 p-2 rounded-lg bg-neutral-900 border border-neutral-800 font-mono text-[11px] text-amber-300 select-all">
-                        TELEGRAM_BOT_TOKEN = votre_token_ici
-                      </div>
-                    </li>
-                  </ol>
+                  <div className="flex flex-col gap-2">
+                    <p className="text-[11px] text-neutral-400 leading-relaxed">
+                      Collez le jeton d'accès (HTTP API token) fourni par <strong>@BotFather</strong> :
+                    </p>
 
-                  <button
-                    onClick={() => {
-                      playMinimalClick(soundEnabled);
-                      fetchTelegramStatus().then(setTelegramStatus);
-                    }}
-                    className="mt-1 w-full py-2 px-3 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-medium flex items-center justify-center gap-1.5 transition cursor-pointer"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Vérifier si le token est détecté</span>
-                  </button>
+                    <div className="flex flex-col sm:flex-row items-stretch gap-2">
+                      <input
+                        id="telegram-token-input"
+                        type="text"
+                        value={botTokenInput}
+                        onChange={(e) => {
+                          setBotTokenInput(e.target.value);
+                          if (tokenError) setTokenError(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleSaveBotToken();
+                          }
+                        }}
+                        placeholder="Ex : 7839402831:AAFlkmx_48k..."
+                        className="flex-1 py-2.5 px-3 rounded-xl bg-neutral-900 border border-neutral-700 focus:border-amber-400 focus:outline-none text-xs text-white placeholder-neutral-500 font-mono"
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                      <button
+                        onClick={handleSaveBotToken}
+                        disabled={isSavingToken || !botTokenInput.trim()}
+                        id="btn-save-telegram-token"
+                        className="py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-neutral-950 font-semibold text-xs flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-50 shrink-0 shadow-xs"
+                      >
+                        {isSavingToken ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Check className="w-3.5 h-3.5" />
+                        )}
+                        <span>{isSavingToken ? 'Vérification...' : 'Valider le token'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {tokenError && (
+                    <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 text-[11px] flex items-center gap-1.5 animate-in fade-in">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0 text-red-400" />
+                      <span>{tokenError}</span>
+                    </div>
+                  )}
+
+                  {tokenSuccess && (
+                    <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-[11px] flex items-center gap-1.5 animate-in fade-in">
+                      <Check className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
+                      <span>{tokenSuccess}</span>
+                    </div>
+                  )}
+
+                  {/* Collapsible 1-minute BotFather guide */}
+                  <div className="pt-2 border-t border-neutral-800/80">
+                    <button
+                      onClick={() => {
+                        playMinimalClick(soundEnabled);
+                        setShowBotFatherSteps((prev) => !prev);
+                      }}
+                      className="w-full flex items-center justify-between text-[11px] text-amber-400 hover:text-amber-300 transition cursor-pointer"
+                    >
+                      <div className="flex items-center gap-1.5 font-medium">
+                        <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Comment obtenir ce token sur Telegram ? (1 minute, gratuit)</span>
+                      </div>
+                      {showBotFatherSteps ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                    </button>
+
+                    {showBotFatherSteps ? (
+                      <ol className="mt-2.5 list-decimal list-inside space-y-1.5 text-[11px] text-neutral-300 leading-relaxed bg-neutral-900/80 p-3 rounded-xl border border-neutral-800 animate-in fade-in">
+                        <li>
+                          Ouvrez l'application <strong>Telegram</strong> sur votre téléphone.
+                        </li>
+                        <li>
+                          Recherchez <strong className="text-white">@BotFather</strong> (avec le badge bleu officiel).
+                        </li>
+                        <li>
+                          Envoyez-lui le message <code className="text-amber-400 font-mono">/newbot</code>.
+                        </li>
+                        <li>
+                          Donnez-lui un nom (ex: <span className="text-white">Mon Couvre-Feu</span>), puis un identifiant finissant obligatoirement par <em>bot</em> (ex: <span className="text-white">mon_couvrefeu_bot</span>).
+                        </li>
+                        <li>
+                          BotFather vous envoie alors votre <strong>HTTP API token</strong>. Copiez-le et collez-le directement dans le champ ci-dessus !
+                        </li>
+                      </ol>
+                    ) : (
+                      <p className="mt-1 text-[10px] text-neutral-500">
+                        Ouvrez Telegram &gt; cherchez <strong>@BotFather</strong> &gt; tapez <code>/newbot</code> pour recevoir votre token.
+                      </p>
+                    )}
+                  </div>
                 </div>
               </div>
             )}

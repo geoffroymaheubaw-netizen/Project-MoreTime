@@ -10,6 +10,8 @@ import {
   pollTelegramUpdates,
   sendTelegramMessage,
   sendTestTelegramAlert,
+  setBotToken,
+  removeBotToken,
 } from './server/telegram.js';
 
 const PORT = 3000;
@@ -701,6 +703,32 @@ async function startServer() {
     } catch (err: any) {
       res.status(500).json({ success: false, message: err?.message || 'Erreur lors du test' });
     }
+  });
+
+  // Save / set bot token directly from UI
+  app.post('/api/telegram/token', async (req, res) => {
+    try {
+      const { token } = req.body;
+      const result = await setBotToken(token);
+      if (result.success) {
+        res.json({
+          success: true,
+          configured: true,
+          botUsername: result.botUsername,
+          botFirstName: result.botFirstName,
+        });
+      } else {
+        res.status(400).json({ success: false, error: result.error });
+      }
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'Erreur serveur' });
+    }
+  });
+
+  // Remove bot token from UI
+  app.delete('/api/telegram/token', (_req, res) => {
+    const success = removeBotToken();
+    res.json({ success, configured: false });
   });
 
   // 8. Push status info

@@ -12,10 +12,25 @@ export interface TelegramSubscriber {
 }
 
 const TELEGRAM_STORAGE_FILE = path.join(process.cwd(), 'telegram-subscribers.json');
+const TELEGRAM_CONFIG_FILE = path.join(process.cwd(), 'telegram-config.json');
 
 let subscribers: Map<string, TelegramSubscriber> = new Map();
 let lastUpdateId = 0;
 let cachedBotInfo: { username: string; firstName: string } | null = null;
+let customBotToken: string | null = null;
+
+// Initialize custom token from disk if exists
+try {
+  if (fs.existsSync(TELEGRAM_CONFIG_FILE)) {
+    const conf = JSON.parse(fs.readFileSync(TELEGRAM_CONFIG_FILE, 'utf-8'));
+    if (conf && typeof conf.token === 'string' && conf.token.trim()) {
+      customBotToken = conf.token.trim();
+      console.log('[Telegram] Loaded custom bot token from telegram-config.json');
+    }
+  }
+} catch (err) {
+  console.warn('[Telegram] Could not read telegram-config.json:', err);
+}
 
 // Load subscribers from disk
 export function loadTelegramSubscribers() {
@@ -54,11 +69,87 @@ export function saveTelegramSubscribers() {
 }
 
 export function getBotToken(): string | null {
-  return process.env.TELEGRAM_BOT_TOKEN?.trim() || null;
+  return customBotToken || process.env.TELEGRAM_BOT_TOKEN?.trim() || null;
 }
 
 export function isTelegramConfigured(): boolean {
   return Boolean(getBotToken());
+}
+
+/**
+ * Update or set bot token directly from UI
+ */
+export async function setBotToken(rawToken: string): Promise<{
+  success: boolean;
+  botUsername?: string;
+  botFirstName?: string;
+  error?: string;
+}> {
+  const token = (rawToken || '').trim();
+  if (!token) {
+    return { success: false, error: 'Le token ne peut pas être vide' };
+  }
+
+  // Validate format roughly (e.g. 123456789:ABCdef...)
+  if (!/^\d+:[A-Za-z0-9_-]{20,}$/.test(token)) {
+    return {
+      success: false,
+      error: 'Format de token invalide. Il doit ressembler à : 123456789:AAFlkmx_...',
+    };
+  }
+
+  // Verify against Telegram API
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const data = (await res.json()) as any;
+    if (!data.ok || !data.result) {
+      return {
+        success: false,
+        error: data.description || 'Token rejeté par l’API Telegram. Vérifiez auprès de @BotFather.',
+      };
+    }
+
+    const username = data.result.username || '';
+    const firstName = data.result.first_name || '';
+
+    customBotToken = token;
+    cachedBotInfo = { username, firstName };
+
+    // Save to disk
+    try {
+      fs.writeFileSync(TELEGRAM_CONFIG_FILE, JSON.stringify({ token, username, firstName, updatedAt: Date.now() }, null, 2), 'utf-8');
+    } catch (saveErr) {
+      console.warn('[Telegram] Failed to save telegram-config.json:', saveErr);
+    }
+
+    console.log(`[Telegram] Bot token saved successfully for @${username}`);
+    return {
+      success: true,
+      botUsername: username,
+      botFirstName: firstName,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Erreur de connexion à Telegram: ${err?.message || err}`,
+    };
+  }
+}
+
+/**
+ * Remove or reset custom token
+ */
+export function removeBotToken(): boolean {
+  customBotToken = null;
+  cachedBotInfo = null;
+  try {
+    if (fs.existsSync(TELEGRAM_CONFIG_FILE)) {
+      fs.unlinkSync(TELEGRAM_CONFIG_FILE);
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function getTelegramSubscribers(): TelegramSubscriber[] {
