@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Sparkles, Settings as SettingsIcon, Flame, Moon, Check, CloudSun } from 'lucide-react';
+import { Sparkles, Settings as SettingsIcon, Flame, Moon, Check } from 'lucide-react';
 import { MINDFUL_QUOTES } from '../data/apps';
 import { ThemeMode, DisconnectReminderSettings } from '../types';
 import { getScheduledTimeForToday } from '../utils/notifications';
@@ -171,8 +171,8 @@ export const ClockHeader: React.FC<ClockHeaderProps> = ({
           <span>{time.minutes}</span>
         </div>
 
-        {/* Date and Weather Quick Access */}
-        <div className="mt-1 flex items-center justify-center gap-2">
+        {/* Date */}
+        <div className="mt-1 flex items-center justify-center">
           <p
             className={`text-sm font-medium tracking-wide ${
               isLight ? 'text-neutral-600' : isEink ? 'text-neutral-700' : 'text-neutral-400'
@@ -180,23 +180,6 @@ export const ClockHeader: React.FC<ClockHeaderProps> = ({
           >
             {dateStr}
           </p>
-          {onOpenWeather && (
-            <button
-              onClick={onOpenWeather}
-              id="btn-quick-weather-header"
-              title="Ouvrir l'application Météo"
-              className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs transition-colors cursor-pointer ${
-                isLight
-                  ? 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'
-                  : isEink
-                  ? 'bg-neutral-300 hover:bg-neutral-400 text-neutral-900'
-                  : 'bg-neutral-900/80 hover:bg-neutral-800 text-neutral-300 hover:text-white border border-neutral-800'
-              }`}
-            >
-              <CloudSun className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-              <span className="text-[11px] font-medium">Météo</span>
-            </button>
-          )}
         </div>
       </div>
 
