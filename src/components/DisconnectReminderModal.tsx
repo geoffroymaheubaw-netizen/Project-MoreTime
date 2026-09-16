@@ -20,6 +20,10 @@ import {
   ChevronDown,
   ChevronUp,
   HelpCircle,
+  Send,
+  ExternalLink,
+  RefreshCw,
+  MessageSquare,
 } from 'lucide-react';
 import {
   DisconnectReminderSettings,
@@ -41,6 +45,11 @@ import {
   subscribeToWebPush,
   sendBackgroundTestPush,
   detectMobilePushEnvironment,
+  fetchTelegramStatus,
+  syncTelegramSubscribers,
+  testTelegramAlert,
+  syncCurfewScheduleWithServer,
+  TelegramStatus,
 } from '../utils/notifications';
 
 interface DisconnectReminderModalProps {
@@ -95,6 +104,13 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
     detectMobilePushEnvironment().isIOS ? 'ios' : 'android'
   );
 
+  // Telegram integration state
+  const [notificationChannelTab, setNotificationChannelTab] = useState<'telegram' | 'webpush'>('telegram');
+  const [telegramStatus, setTelegramStatus] = useState<TelegramStatus | null>(null);
+  const [isSyncingTelegram, setIsSyncingTelegram] = useState<boolean>(false);
+  const [isTestingTelegram, setIsTestingTelegram] = useState<boolean>(false);
+  const [telegramFeedback, setTelegramFeedback] = useState<string | null>(null);
+
   // Sync state on open
   React.useEffect(() => {
     if (isOpen) {
@@ -104,11 +120,23 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
       setTestSent(false);
       setCountdownTest(null);
       setPushStatusMessage(null);
+      setTelegramFeedback(null);
 
       // Check push subscription
       getPushSubscription().then((sub) => {
         setIsPushSubscribed(Boolean(sub));
       });
+
+      // Fetch Telegram status
+      fetchTelegramStatus().then((status) => {
+        setTelegramStatus(status);
+        if (!status?.configured) {
+          // If telegram not configured yet, keep webpush accessible
+        }
+      });
+
+      // Synchronize curfew schedule with server
+      syncCurfewScheduleWithServer(settings);
     }
   }, [isOpen, settings]);
 
@@ -123,6 +151,45 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
   const updateSettings = (updated: DisconnectReminderSettings) => {
     setLocalSettings(updated);
     onSave(updated);
+    // Keep server-side background schedulers updated with exact schedule
+    syncCurfewScheduleWithServer(updated);
+  };
+
+  const handleSyncTelegram = async () => {
+    playMinimalClick(soundEnabled);
+    setIsSyncingTelegram(true);
+    setTelegramFeedback(null);
+    try {
+      const status = await syncTelegramSubscribers();
+      setTelegramStatus(status);
+      if (status && status.subscribersCount > 0) {
+        setTelegramFeedback(
+          `Compte Telegram connecté avec succès (${status.subscribers[0].name}) !`
+        );
+      } else {
+        setTelegramFeedback(
+          "Aucun message reçu. Avez-vous cliqué sur « Démarrer » (/start) dans le bot Telegram ?"
+        );
+      }
+    } catch {
+      setTelegramFeedback("Erreur lors de la synchronisation avec Telegram.");
+    } finally {
+      setIsSyncingTelegram(false);
+    }
+  };
+
+  const handleTestTelegram = async () => {
+    playMinimalClick(soundEnabled);
+    setIsTestingTelegram(true);
+    setTelegramFeedback(null);
+    try {
+      const res = await testTelegramAlert();
+      setTelegramFeedback(res.message);
+    } catch (err: any) {
+      setTelegramFeedback(err?.message || "Erreur lors du test Telegram.");
+    } finally {
+      setIsTestingTelegram(false);
+    }
   };
 
   const handleToggleEnable = () => {
@@ -954,228 +1021,501 @@ export const DisconnectReminderModal: React.FC<DisconnectReminderModalProps> = (
           </div>
         </div>
 
-        {/* Notification permissions & Web Push status box */}
-        <div
-          className={`p-3.5 rounded-2xl border text-xs flex flex-col gap-3 ${
-            isLight
-              ? 'bg-neutral-50 border-neutral-200 text-neutral-800'
-              : isEink
-              ? 'bg-neutral-200 border-neutral-600 text-neutral-900'
-              : 'bg-neutral-900/60 border-neutral-800 text-neutral-200'
-          }`}
-        >
-          {/* Header */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Radio className="w-4 h-4 text-amber-400" />
-              <span className="font-semibold text-xs">Notifications site fermé (Web Push)</span>
-            </div>
-            <span
-              className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
-                isPushSubscribed
-                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                  : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
-              }`}
-            >
-              {isPushSubscribed ? 'Synchronisé avec le serveur' : 'Action requise'}
+        {/* Notification Channel Selection: Telegram vs Web Push */}
+        <div className="flex flex-col gap-2 pt-1">
+          <label className="text-xs font-semibold uppercase tracking-wider text-neutral-400 flex items-center justify-between">
+            <span>Canal d'alerte</span>
+            <span className="text-[10px] text-amber-500 lowercase font-normal">
+              {notificationChannelTab === 'telegram' ? 'recommandé sur mobile' : 'via navigateur'}
             </span>
-          </div>
+          </label>
 
-          <p className="text-[11px] text-neutral-400 leading-relaxed">
-            Grâce au protocole Web Push et au Service Worker, votre téléphone reçoit vos alertes de couvre-feu
-            même si le navigateur ou l'onglet est <strong className="text-neutral-200">totalement fermé</strong> ou que votre écran est verrouillé.
-          </p>
-
-          {/* Diagnostic indicators */}
-          <div className="grid grid-cols-2 gap-2 p-2 rounded-xl bg-neutral-950/40 border border-neutral-800/80 text-[11px]">
-            <div className="flex flex-col gap-0.5">
-              <span className="text-[10px] text-neutral-500">Autorisation navigateur</span>
-              <span className={`font-semibold ${permissionStatus === 'granted' ? 'text-emerald-400' : 'text-amber-400'}`}>
-                {permissionStatus === 'granted' ? '✓ Accordée' : permissionStatus === 'denied' ? '✕ Bloquée' : '⏳ En attente'}
-              </span>
-            </div>
-            <div className="flex flex-col gap-0.5">
-              <span className="text-[10px] text-neutral-500">Serveur d'arrière-plan</span>
-              <span className={`font-semibold ${isPushSubscribed ? 'text-emerald-400' : 'text-amber-400'}`}>
-                {isPushSubscribed ? '✓ Connecté' : '○ Non relié'}
-              </span>
-            </div>
-          </div>
-
-          {/* iOS note for Safari */}
-          {mobileEnv.isIOS && !mobileEnv.isStandalone && (
-            <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300 leading-relaxed flex items-start gap-2">
-              <Smartphone className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-              <div>
-                <strong className="text-white block font-medium">Important sur iPhone (iOS) :</strong>
-                Apple bloque les notifications en arrière-plan dans Safari. Pour les recevoir écran éteint : touchez le bouton Partager <span className="font-semibold text-white">« Sur l'écran d'accueil »</span>, puis ouvrez l'application depuis votre écran d'accueil.
-              </div>
-            </div>
-          )}
-
-          {/* Action to subscribe / link device */}
-          {!isPushSubscribed ? (
-            <button
-              onClick={handleEnablePush}
-              disabled={isSubscribingPush}
-              id="btn-enable-web-push"
-              className="w-full py-2.5 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-neutral-950 font-semibold text-xs flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-50 shadow-xs"
-            >
-              <Zap className="w-3.5 h-3.5 fill-current" />
-              <span>{isSubscribingPush ? 'Synchronisation en cours...' : 'Activer les notifications site fermé'}</span>
-            </button>
-          ) : (
-            <div className="flex items-center gap-2 p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-400 font-medium">
-              <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span>Votre appareil est synchronisé : alertes actives site fermé & écran verrouillé</span>
-            </div>
-          )}
-
-          {/* Feedback message */}
-          {pushStatusMessage && (
-            <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] flex items-center gap-1.5 animate-in fade-in">
-              <AlertCircle className="w-3.5 h-3.5 shrink-0 text-amber-400" />
-              <span>{pushStatusMessage}</span>
-            </div>
-          )}
-
-          {/* Collapsible Troubleshooting Guide */}
-          <div className="pt-1 border-t border-neutral-800/40">
+          <div className="grid grid-cols-2 gap-1 p-1 rounded-2xl bg-neutral-900 border border-neutral-800 text-xs">
             <button
               onClick={() => {
                 playMinimalClick(soundEnabled);
-                setShowTroubleshooting((prev) => !prev);
+                setNotificationChannelTab('telegram');
               }}
-              id="btn-toggle-troubleshooting"
-              className="w-full py-1.5 flex items-center justify-between text-xs text-amber-400 hover:text-amber-300 transition cursor-pointer"
+              id="tab-channel-telegram"
+              className={`py-2 px-2.5 rounded-xl font-medium flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                notificationChannelTab === 'telegram'
+                  ? 'bg-amber-500 text-neutral-950 font-semibold shadow-xs'
+                  : 'text-neutral-400 hover:text-neutral-200'
+              }`}
             >
-              <div className="flex items-center gap-1.5 font-medium">
-                <HelpCircle className="w-3.5 h-3.5" />
-                <span>L'écran fermé ne s'allume pas ? Guide de dépannage</span>
-              </div>
-              {showTroubleshooting ? (
-                <ChevronUp className="w-3.5 h-3.5" />
-              ) : (
-                <ChevronDown className="w-3.5 h-3.5" />
-              )}
+              <Send className="w-3.5 h-3.5" />
+              <span>Bot Telegram</span>
             </button>
-
-            {showTroubleshooting && (
-              <div className="mt-2 p-3 rounded-xl bg-neutral-950/70 border border-neutral-800 text-[11px] text-neutral-300 flex flex-col gap-2.5 animate-in fade-in">
-                {/* Platform Tabs */}
-                <div className="flex rounded-lg bg-neutral-900 p-0.5 border border-neutral-800">
-                  <button
-                    onClick={() => setTroubleshootTab('ios')}
-                    className={`flex-1 py-1 rounded-md text-[11px] font-medium transition cursor-pointer ${
-                      troubleshootTab === 'ios'
-                        ? 'bg-amber-500 text-neutral-950 font-semibold shadow-xs'
-                        : 'text-neutral-400 hover:text-neutral-200'
-                    }`}
-                  >
-                    iPhone (iOS / Apple)
-                  </button>
-                  <button
-                    onClick={() => setTroubleshootTab('android')}
-                    className={`flex-1 py-1 rounded-md text-[11px] font-medium transition cursor-pointer ${
-                      troubleshootTab === 'android'
-                        ? 'bg-amber-500 text-neutral-950 font-semibold shadow-xs'
-                        : 'text-neutral-400 hover:text-neutral-200'
-                    }`}
-                  >
-                    Android (Samsung, Xiaomi, Pixel)
-                  </button>
-                </div>
-
-                {/* iPhone / iOS Guide */}
-                {troubleshootTab === 'ios' && (
-                  <div className="flex flex-col gap-2 leading-relaxed">
-                    <p className="text-amber-300 font-medium">
-                      Sur iPhone, Apple impose des restrictions strictes pour préserver l'autonomie et la vie privée :
-                    </p>
-                    <ol className="list-decimal list-inside space-y-1.5 text-neutral-300">
-                      <li>
-                        <strong className="text-white">Obligation PWA :</strong> Vous devez impérativement appuyer sur le bouton Partager de Safari, puis choisir <span className="text-amber-400">« Sur l'écran d'accueil »</span>. Les notifications écran éteint sont désactivées dans un simple onglet Safari.
-                      </li>
-                      <li>
-                        <strong className="text-white">Ouvrir depuis l'écran d'accueil :</strong> Lancez ensuite l'icône Minimal depuis votre écran d'accueil et réactivez les notifications.
-                      </li>
-                      <li>
-                        <strong className="text-white">Mode Concentration / Repos :</strong> Si le mode « Ne pas déranger » ou « Repos » est activé le soir, iOS masque l'écran. Allez dans <em>Réglages iPhone &gt; Concentration &gt; Repos (ou Ne pas déranger)</em> et ajoutez Minimal aux applications autorisées.
-                      </li>
-                      <li>
-                        <strong className="text-white">Réglages Notifications :</strong> Dans <em>Réglages &gt; Notifications &gt; Minimal</em>, assurez-vous que « Écran verrouillé », « Bannières » et « Sons » sont cochés.
-                      </li>
-                    </ol>
-                  </div>
-                )}
-
-                {/* Android Guide */}
-                {troubleshootTab === 'android' && (
-                  <div className="flex flex-col gap-2 leading-relaxed">
-                    <p className="text-amber-300 font-medium">
-                      Sur Android, les optimiseurs d'énergie coupent souvent les notifications écran éteint :
-                    </p>
-                    <ol className="list-decimal list-inside space-y-1.5 text-neutral-300">
-                      <li>
-                        <strong className="text-white">Batterie non restreinte :</strong> Allez dans <em>Paramètres Android &gt; Applications &gt; Chrome (ou Minimal) &gt; Batterie</em>, et sélectionnez <span className="text-amber-400">« Non restreinte »</span> pour empêcher Android d'endormir le service en veille.
-                      </li>
-                      <li>
-                        <strong className="text-white">Écran de verrouillage :</strong> Dans <em>Paramètres &gt; Notifications &gt; Notifications écran verrouillé</em>, vérifiez que l'affichage du contenu est bien activé.
-                      </li>
-                      <li>
-                        <strong className="text-white">Mode Coucher / Ne pas déranger :</strong> Si votre téléphone passe automatiquement en mode silencieux la nuit, autorisez Minimal ou Chrome dans les exceptions de Ne pas déranger.
-                      </li>
-                    </ol>
-                  </div>
-                )}
-
-                <div className="p-2 rounded-lg bg-neutral-900/80 border border-neutral-800 text-[10px] text-neutral-400">
-                  ⚠️ <strong className="text-neutral-200">Attention à l'environnement de test :</strong> Dans la fenêtre d'aperçu sur ordinateur (iframe), les notifications en arrière-plan sont bloquées par sécurité. Ouvrez le lien direct sur votre smartphone.
-                </div>
-              </div>
-            )}
+            <button
+              onClick={() => {
+                playMinimalClick(soundEnabled);
+                setNotificationChannelTab('webpush');
+              }}
+              id="tab-channel-webpush"
+              className={`py-2 px-2.5 rounded-xl font-medium flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                notificationChannelTab === 'webpush'
+                  ? 'bg-amber-500 text-neutral-950 font-semibold shadow-xs'
+                  : 'text-neutral-400 hover:text-neutral-200'
+              }`}
+            >
+              <Radio className="w-3.5 h-3.5" />
+              <span>Web Push (Navigateur)</span>
+            </button>
           </div>
         </div>
 
-        {/* Test Notification Actions */}
-        <div className="pt-2 border-t border-neutral-800/40 flex flex-col gap-2">
-          {/* Delayed test button to verify screen locked / closed */}
-          <button
-            onClick={() => handleSendBackgroundPushTest(6)}
-            disabled={countdownTest !== null}
-            id="btn-test-locked-screen"
-            className={`w-full py-2.5 px-4 rounded-xl text-xs font-medium flex items-center justify-center gap-2 transition-all cursor-pointer ${
-              countdownTest !== null
-                ? 'bg-amber-500 text-neutral-950 font-semibold animate-pulse'
-                : isLight
-                ? 'bg-neutral-900 text-white hover:bg-neutral-800'
+        {/* TELEGRAM BOT CHANNEL UI */}
+        {notificationChannelTab === 'telegram' && (
+          <div
+            className={`p-3.5 rounded-2xl border text-xs flex flex-col gap-3 ${
+              isLight
+                ? 'bg-neutral-50 border-neutral-200 text-neutral-800'
                 : isEink
-                ? 'bg-neutral-900 text-white'
-                : 'bg-neutral-800 text-neutral-100 hover:bg-neutral-700'
+                ? 'bg-neutral-200 border-neutral-600 text-neutral-900'
+                : 'bg-neutral-900/60 border-neutral-800 text-neutral-200'
             }`}
           >
-            {countdownTest !== null ? (
-              <>
-                <Lock className="w-3.5 h-3.5 text-neutral-950" />
-                <span>Verrouillez votre écran ! Envoi dans {countdownTest}s...</span>
-              </>
-            ) : (
-              <>
-                <Lock className="w-3.5 h-3.5 text-amber-400" />
-                <span>Tester écran éteint / site fermé (délai 6s)</span>
-              </>
-            )}
-          </button>
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Send className="w-4 h-4 text-amber-400" />
+                <span className="font-semibold text-xs">Alertes par Bot Telegram</span>
+              </div>
+              <span
+                className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                  telegramStatus?.configured && telegramStatus.subscribersCount > 0
+                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                    : telegramStatus?.configured
+                    ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                    : 'bg-neutral-800 text-neutral-400 border border-neutral-700'
+                }`}
+              >
+                {telegramStatus?.configured && telegramStatus.subscribersCount > 0
+                  ? '✓ Relié & Actif'
+                  : telegramStatus?.configured
+                  ? 'Action requise (/start)'
+                  : 'À configurer'}
+              </span>
+            </div>
 
-          {/* Immediate test button */}
-          <button
-            onClick={() => handleSendBackgroundPushTest(0)}
-            id="btn-test-instant"
-            className="w-full py-2 px-3 rounded-xl text-xs text-neutral-400 hover:text-neutral-200 border border-neutral-800/80 hover:border-neutral-700 flex items-center justify-center gap-1.5 transition cursor-pointer"
+            <p className="text-[11px] text-neutral-400 leading-relaxed">
+              Les notifications Telegram contournent les restrictions de veille d'Apple et Google : votre téléphone sonne et s'allume{' '}
+              <strong className="text-neutral-200">systématiquement</strong>, même écran verrouillé et navigateur fermé.
+            </p>
+
+            {/* BOT CONFIGURED STATE */}
+            {telegramStatus?.configured ? (
+              <div className="flex flex-col gap-2.5">
+                <div className="p-2.5 rounded-xl bg-neutral-950/50 border border-neutral-800 text-[11px] flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-neutral-400">Bot connecté au serveur :</span>
+                    <a
+                      href={`https://t.me/${telegramStatus.botUsername}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono text-amber-400 hover:underline flex items-center gap-1"
+                    >
+                      @{telegramStatus.botUsername}
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1 border-t border-neutral-800/60">
+                    <span className="text-neutral-400">Destinataires enregistrés :</span>
+                    <span className="font-semibold text-white">
+                      {telegramStatus.subscribersCount > 0
+                        ? `${telegramStatus.subscribersCount} appareil(s)`
+                        : 'Aucun pour le moment'}
+                    </span>
+                  </div>
+
+                  {telegramStatus.subscribers.length > 0 && (
+                    <div className="pt-1 border-t border-neutral-800/60 flex flex-col gap-1">
+                      <span className="text-[10px] text-neutral-500 uppercase tracking-wider">
+                        Comptes reliés :
+                      </span>
+                      {telegramStatus.subscribers.map((sub, idx) => (
+                        <div
+                          key={idx}
+                          className="flex items-center justify-between text-[11px] bg-emerald-500/10 text-emerald-300 px-2 py-1 rounded-lg border border-emerald-500/20"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>{sub.name || 'Utilisateur'}</span>
+                            {sub.username && (
+                              <span className="text-emerald-400/70 text-[10px]">(@{sub.username})</span>
+                            )}
+                          </div>
+                          <span className="text-[9px] text-emerald-400/60">ID: {sub.chatId}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* If no subscriber yet, prompt to click link and start */}
+                {telegramStatus.subscribersCount === 0 ? (
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 flex flex-col gap-2 text-[11px]">
+                    <strong className="text-white font-medium">Reliez votre Telegram en 2 étapes :</strong>
+                    <ol className="list-decimal list-inside space-y-1 text-neutral-300">
+                      <li>
+                        Touchez le bouton ci-dessous pour ouvrir votre bot :
+                      </li>
+                    </ol>
+
+                    <a
+                      href={`https://t.me/${telegramStatus.botUsername}?start=minimal`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full py-2 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-neutral-950 font-semibold text-xs flex items-center justify-center gap-1.5 transition text-center"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Ouvrir @{telegramStatus.botUsername} sur Telegram</span>
+                    </a>
+
+                    <div className="text-neutral-300">
+                      2. Dans Telegram, appuyez sur <strong className="text-white">« Démarrer »</strong> (ou envoyez <code className="text-amber-300">/start</code>).
+                    </div>
+
+                    <button
+                      onClick={handleSyncTelegram}
+                      disabled={isSyncingTelegram}
+                      className="w-full py-2 px-3 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-medium flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingTelegram ? 'animate-spin' : ''}`} />
+                      <span>{isSyncingTelegram ? 'Recherche en cours...' : 'Vérifier la connexion avec Telegram'}</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    <button
+                      onClick={handleTestTelegram}
+                      disabled={isTestingTelegram}
+                      id="btn-test-telegram-alert"
+                      className="w-full py-2.5 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-neutral-950 font-semibold text-xs flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-50 shadow-xs"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>{isTestingTelegram ? 'Envoi en cours...' : 'Envoyer un test sur Telegram'}</span>
+                    </button>
+
+                    <button
+                      onClick={handleSyncTelegram}
+                      disabled={isSyncingTelegram}
+                      className="w-full py-1.5 text-xs text-neutral-400 hover:text-neutral-200 flex items-center justify-center gap-1 transition cursor-pointer"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isSyncingTelegram ? 'animate-spin' : ''}`} />
+                      <span>Actualiser les abonnés Telegram</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* BOT NOT CONFIGURED STEP-BY-STEP */
+              <div className="flex flex-col gap-2.5">
+                <div className="p-3 rounded-xl bg-neutral-950/60 border border-neutral-800 text-[11px] text-neutral-300 flex flex-col gap-2">
+                  <div className="font-semibold text-amber-400 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Création de votre Bot Telegram (1 minute, 100% gratuit) :</span>
+                  </div>
+
+                  <ol className="list-decimal list-inside space-y-1.5 leading-relaxed text-neutral-300">
+                    <li>
+                      Sur votre téléphone, ouvrez l'application <strong>Telegram</strong> et cherchez{' '}
+                      <strong className="text-white">@BotFather</strong>.
+                    </li>
+                    <li>
+                      Envoyez-lui le message <code className="text-amber-400 font-mono">/newbot</code>.
+                    </li>
+                    <li>
+                      Donnez-lui un nom (ex: <span className="text-white">Mon Rappel</span>), puis un identifiant finissant par <em>bot</em> (ex: <span className="text-white">geoffroy_rappel_bot</span>).
+                    </li>
+                    <li>
+                      BotFather vous renvoie un message avec votre <strong>HTTP API token</strong> (ex: <code className="text-amber-300 font-mono">7123456789:AAH...</code>).
+                    </li>
+                    <li>
+                      Dans Google AI Studio, ouvrez les <strong>Settings / Secrets</strong> de l'application et ajoutez :
+                      <div className="mt-1 p-2 rounded-lg bg-neutral-900 border border-neutral-800 font-mono text-[11px] text-amber-300 select-all">
+                        TELEGRAM_BOT_TOKEN = votre_token_ici
+                      </div>
+                    </li>
+                  </ol>
+
+                  <button
+                    onClick={() => {
+                      playMinimalClick(soundEnabled);
+                      fetchTelegramStatus().then(setTelegramStatus);
+                    }}
+                    className="mt-1 w-full py-2 px-3 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-medium flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Vérifier si le token est détecté</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Telegram feedback message */}
+            {telegramFeedback && (
+              <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] flex items-center gap-1.5 animate-in fade-in">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                <span>{telegramFeedback}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* WEB PUSH CHANNEL UI */}
+        {notificationChannelTab === 'webpush' && (
+          <div
+            className={`p-3.5 rounded-2xl border text-xs flex flex-col gap-3 ${
+              isLight
+                ? 'bg-neutral-50 border-neutral-200 text-neutral-800'
+                : isEink
+                ? 'bg-neutral-200 border-neutral-600 text-neutral-900'
+                : 'bg-neutral-900/60 border-neutral-800 text-neutral-200'
+            }`}
           >
-            <Bell className="w-3.5 h-3.5 text-neutral-400" />
-            <span>Tester immédiatement sur ce téléphone</span>
-          </button>
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Radio className="w-4 h-4 text-amber-400" />
+                <span className="font-semibold text-xs">Notifications site fermé (Web Push)</span>
+              </div>
+              <span
+                className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                  isPushSubscribed
+                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                    : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                }`}
+              >
+                {isPushSubscribed ? 'Synchronisé avec le serveur' : 'Action requise'}
+              </span>
+            </div>
+
+            <p className="text-[11px] text-neutral-400 leading-relaxed">
+              Grâce au protocole Web Push et au Service Worker, votre téléphone reçoit vos alertes de couvre-feu
+              même si le navigateur ou l'onglet est <strong className="text-neutral-200">totalement fermé</strong> ou que votre écran est verrouillé.
+            </p>
+
+            {/* Diagnostic indicators */}
+            <div className="grid grid-cols-2 gap-2 p-2 rounded-xl bg-neutral-950/40 border border-neutral-800/80 text-[11px]">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[10px] text-neutral-500">Autorisation navigateur</span>
+                <span className={`font-semibold ${permissionStatus === 'granted' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {permissionStatus === 'granted' ? '✓ Accordée' : permissionStatus === 'denied' ? '✕ Bloquée' : '⏳ En attente'}
+                </span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[10px] text-neutral-500">Serveur d'arrière-plan</span>
+                <span className={`font-semibold ${isPushSubscribed ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {isPushSubscribed ? '✓ Connecté' : '○ Non relié'}
+                </span>
+              </div>
+            </div>
+
+            {/* iOS note for Safari */}
+            {mobileEnv.isIOS && !mobileEnv.isStandalone && (
+              <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300 leading-relaxed flex items-start gap-2">
+                <Smartphone className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <strong className="text-white block font-medium">Important sur iPhone (iOS) :</strong>
+                  Apple bloque les notifications en arrière-plan dans Safari. Pour les recevoir écran éteint : touchez le bouton Partager <span className="font-semibold text-white">« Sur l'écran d'accueil »</span>, puis ouvrez l'application depuis votre écran d'accueil.
+                </div>
+              </div>
+            )}
+
+            {/* Action to subscribe / link device */}
+            {!isPushSubscribed ? (
+              <button
+                onClick={handleEnablePush}
+                disabled={isSubscribingPush}
+                id="btn-enable-web-push"
+                className="w-full py-2.5 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-neutral-950 font-semibold text-xs flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-50 shadow-xs"
+              >
+                <Zap className="w-3.5 h-3.5 fill-current" />
+                <span>{isSubscribingPush ? 'Synchronisation en cours...' : 'Activer les notifications site fermé'}</span>
+              </button>
+            ) : (
+              <div className="flex items-center gap-2 p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-400 font-medium">
+                <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>Votre appareil est synchronisé : alertes actives site fermé & écran verrouillé</span>
+              </div>
+            )}
+
+            {/* Feedback message */}
+            {pushStatusMessage && (
+              <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] flex items-center gap-1.5 animate-in fade-in">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                <span>{pushStatusMessage}</span>
+              </div>
+            )}
+
+            {/* Collapsible Troubleshooting Guide */}
+            <div className="pt-1 border-t border-neutral-800/40">
+              <button
+                onClick={() => {
+                  playMinimalClick(soundEnabled);
+                  setShowTroubleshooting((prev) => !prev);
+                }}
+                id="btn-toggle-troubleshooting"
+                className="w-full py-1.5 flex items-center justify-between text-xs text-amber-400 hover:text-amber-300 transition cursor-pointer"
+              >
+                <div className="flex items-center gap-1.5 font-medium">
+                  <HelpCircle className="w-3.5 h-3.5" />
+                  <span>L'écran fermé ne s'allume pas ? Guide de dépannage</span>
+                </div>
+                {showTroubleshooting ? (
+                  <ChevronUp className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                )}
+              </button>
+
+              {showTroubleshooting && (
+                <div className="mt-2 p-3 rounded-xl bg-neutral-950/70 border border-neutral-800 text-[11px] text-neutral-300 flex flex-col gap-2.5 animate-in fade-in">
+                  {/* Platform Tabs */}
+                  <div className="flex rounded-lg bg-neutral-900 p-0.5 border border-neutral-800">
+                    <button
+                      onClick={() => setTroubleshootTab('ios')}
+                      className={`flex-1 py-1 rounded-md text-[11px] font-medium transition cursor-pointer ${
+                        troubleshootTab === 'ios'
+                          ? 'bg-amber-500 text-neutral-950 font-semibold shadow-xs'
+                          : 'text-neutral-400 hover:text-neutral-200'
+                      }`}
+                    >
+                      iPhone (iOS / Apple)
+                    </button>
+                    <button
+                      onClick={() => setTroubleshootTab('android')}
+                      className={`flex-1 py-1 rounded-md text-[11px] font-medium transition cursor-pointer ${
+                        troubleshootTab === 'android'
+                          ? 'bg-amber-500 text-neutral-950 font-semibold shadow-xs'
+                          : 'text-neutral-400 hover:text-neutral-200'
+                      }`}
+                    >
+                      Android (Samsung, Xiaomi, Pixel)
+                    </button>
+                  </div>
+
+                  {/* iPhone / iOS Guide */}
+                  {troubleshootTab === 'ios' && (
+                    <div className="flex flex-col gap-2 leading-relaxed">
+                      <p className="text-amber-300 font-medium">
+                        Sur iPhone, Apple impose des restrictions strictes pour préserver l'autonomie et la vie privée :
+                      </p>
+                      <ol className="list-decimal list-inside space-y-1.5 text-neutral-300">
+                        <li>
+                          <strong className="text-white">Obligation PWA :</strong> Vous devez impérativement appuyer sur le bouton Partager de Safari, puis choisir <span className="text-amber-400">« Sur l'écran d'accueil »</span>. Les notifications écran éteint sont désactivées dans un simple onglet Safari.
+                        </li>
+                        <li>
+                          <strong className="text-white">Ouvrir depuis l'écran d'accueil :</strong> Lancez ensuite l'icône Minimal depuis votre écran d'accueil et réactivez les notifications.
+                        </li>
+                        <li>
+                          <strong className="text-white">Mode Concentration / Repos :</strong> Si le mode « Ne pas déranger » ou « Repos » est activé le soir, iOS masque l'écran. Allez dans <em>Réglages iPhone &gt; Concentration &gt; Repos (ou Ne pas déranger)</em> et ajoutez Minimal aux applications autorisées.
+                        </li>
+                        <li>
+                          <strong className="text-white">Réglages Notifications :</strong> Dans <em>Réglages &gt; Notifications &gt; Minimal</em>, assurez-vous que « Écran verrouillé », « Bannières » et « Sons » sont cochés.
+                        </li>
+                      </ol>
+                    </div>
+                  )}
+
+                  {/* Android Guide */}
+                  {troubleshootTab === 'android' && (
+                    <div className="flex flex-col gap-2 leading-relaxed">
+                      <p className="text-amber-300 font-medium">
+                        Sur Android, les optimiseurs d'énergie coupent souvent les notifications écran éteint :
+                      </p>
+                      <ol className="list-decimal list-inside space-y-1.5 text-neutral-300">
+                        <li>
+                          <strong className="text-white">Batterie non restreinte :</strong> Allez dans <em>Paramètres Android &gt; Applications &gt; Chrome (ou Minimal) &gt; Batterie</em>, et sélectionnez <span className="text-amber-400">« Non restreinte »</span> pour empêcher Android d'endormir le service en veille.
+                        </li>
+                        <li>
+                          <strong className="text-white">Écran de verrouillage :</strong> Dans <em>Paramètres &gt; Notifications &gt; Notifications écran verrouillé</em>, vérifiez que l'affichage du contenu est bien activé.
+                        </li>
+                        <li>
+                          <strong className="text-white">Mode Coucher / Ne pas déranger :</strong> Si votre téléphone passe automatiquement en mode silencieux la nuit, autorisez Minimal ou Chrome dans les exceptions de Ne pas déranger.
+                        </li>
+                      </ol>
+                    </div>
+                  )}
+
+                  <div className="p-2 rounded-lg bg-neutral-900/80 border border-neutral-800 text-[10px] text-neutral-400">
+                    ⚠️ <strong className="text-neutral-200">Attention à l'environnement de test :</strong> Dans la fenêtre d'aperçu sur ordinateur (iframe), les notifications en arrière-plan sont bloquées par sécurité. Ouvrez le lien direct sur votre smartphone.
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Test Notification Actions */}
+        <div className="pt-2 border-t border-neutral-800/40 flex flex-col gap-2">
+          {notificationChannelTab === 'telegram' ? (
+            <button
+              onClick={handleTestTelegram}
+              disabled={isTestingTelegram || !telegramStatus?.configured || telegramStatus.subscribersCount === 0}
+              id="btn-test-telegram-bottom"
+              className={`w-full py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                isTestingTelegram
+                  ? 'bg-amber-500/50 text-neutral-900 cursor-wait'
+                  : telegramStatus?.configured && telegramStatus.subscribersCount > 0
+                  ? 'bg-amber-500 hover:bg-amber-400 text-neutral-950 shadow-xs'
+                  : 'bg-neutral-800 text-neutral-500 cursor-not-allowed'
+              }`}
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span>
+                {isTestingTelegram
+                  ? 'Envoi du test Telegram en cours...'
+                  : !telegramStatus?.configured
+                  ? 'Configurez le token Telegram d\'abord'
+                  : telegramStatus.subscribersCount === 0
+                  ? 'Ouvrez le bot et envoyez /start d\'abord'
+                  : 'Tester l\'alerte Telegram sur mon téléphone'}
+              </span>
+            </button>
+          ) : (
+            <>
+              {/* Delayed test button to verify screen locked / closed */}
+              <button
+                onClick={() => handleSendBackgroundPushTest(6)}
+                disabled={countdownTest !== null}
+                id="btn-test-locked-screen"
+                className={`w-full py-2.5 px-4 rounded-xl text-xs font-medium flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                  countdownTest !== null
+                    ? 'bg-amber-500 text-neutral-950 font-semibold animate-pulse'
+                    : isLight
+                    ? 'bg-neutral-900 text-white hover:bg-neutral-800'
+                    : isEink
+                    ? 'bg-neutral-900 text-white'
+                    : 'bg-neutral-800 text-neutral-100 hover:bg-neutral-700'
+                }`}
+              >
+                {countdownTest !== null ? (
+                  <>
+                    <Lock className="w-3.5 h-3.5 text-neutral-950" />
+                    <span>Verrouillez votre écran ! Envoi dans {countdownTest}s...</span>
+                  </>
+                ) : (
+                  <>
+                    <Lock className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Tester écran éteint / site fermé (délai 6s)</span>
+                  </>
+                )}
+              </button>
+
+              {/* Immediate test button */}
+              <button
+                onClick={() => handleSendBackgroundPushTest(0)}
+                id="btn-test-instant"
+                className="w-full py-2 px-3 rounded-xl text-xs text-neutral-400 hover:text-neutral-200 border border-neutral-800/80 hover:border-neutral-700 flex items-center justify-center gap-1.5 transition cursor-pointer"
+              >
+                <Bell className="w-3.5 h-3.5 text-neutral-400" />
+                <span>Tester immédiatement sur ce téléphone</span>
+              </button>
+            </>
+          )}
 
           <button
             onClick={onClose}

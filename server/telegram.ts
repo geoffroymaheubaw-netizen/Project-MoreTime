@@ -1,0 +1,337 @@
+import fs from 'fs';
+import path from 'path';
+
+export interface TelegramSubscriber {
+  chatId: string;
+  name: string;
+  username?: string;
+  enabled: boolean;
+  lastSentTimestamp?: number;
+  lastSentCycle?: string;
+  registeredAt: number;
+}
+
+const TELEGRAM_STORAGE_FILE = path.join(process.cwd(), 'telegram-subscribers.json');
+
+let subscribers: Map<string, TelegramSubscriber> = new Map();
+let lastUpdateId = 0;
+let cachedBotInfo: { username: string; firstName: string } | null = null;
+
+// Load subscribers from disk
+export function loadTelegramSubscribers() {
+  try {
+    if (fs.existsSync(TELEGRAM_STORAGE_FILE)) {
+      const data: TelegramSubscriber[] = JSON.parse(
+        fs.readFileSync(TELEGRAM_STORAGE_FILE, 'utf-8')
+      );
+      subscribers = new Map(data.map((s) => [s.chatId, s]));
+      console.log(`[Telegram] Loaded ${subscribers.size} subscribers from disk`);
+    }
+  } catch (err) {
+    console.warn('[Telegram] Could not read telegram-subscribers.json:', err);
+  }
+
+  // If TELEGRAM_CHAT_ID is provided via env, ensure it is enrolled
+  const envChatId = process.env.TELEGRAM_CHAT_ID?.trim();
+  if (envChatId && !subscribers.has(envChatId)) {
+    subscribers.set(envChatId, {
+      chatId: envChatId,
+      name: 'Utilisateur (Configuré via ENV)',
+      enabled: true,
+      registeredAt: Date.now(),
+    });
+    saveTelegramSubscribers();
+  }
+}
+
+export function saveTelegramSubscribers() {
+  try {
+    const data = Array.from(subscribers.values());
+    fs.writeFileSync(TELEGRAM_STORAGE_FILE, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('[Telegram] Could not save telegram-subscribers.json:', err);
+  }
+}
+
+export function getBotToken(): string | null {
+  return process.env.TELEGRAM_BOT_TOKEN?.trim() || null;
+}
+
+export function isTelegramConfigured(): boolean {
+  return Boolean(getBotToken());
+}
+
+export function getTelegramSubscribers(): TelegramSubscriber[] {
+  return Array.from(subscribers.values()).filter((s) => s.enabled);
+}
+
+/**
+ * Fetch bot profile details from Telegram API
+ */
+export async function getBotInfo(): Promise<{
+  configured: boolean;
+  username: string | null;
+  firstName: string | null;
+}> {
+  const token = getBotToken();
+  if (!token) {
+    return { configured: false, username: null, firstName: null };
+  }
+
+  if (cachedBotInfo) {
+    return {
+      configured: true,
+      username: cachedBotInfo.username,
+      firstName: cachedBotInfo.firstName,
+    };
+  }
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const data = (await res.json()) as any;
+    if (data.ok && data.result) {
+      cachedBotInfo = {
+        username: data.result.username || '',
+        firstName: data.result.first_name || '',
+      };
+      return {
+        configured: true,
+        username: cachedBotInfo.username,
+        firstName: cachedBotInfo.firstName,
+      };
+    }
+  } catch (err) {
+    console.warn('[Telegram] getMe failed:', err);
+  }
+
+  return { configured: true, username: null, firstName: null };
+}
+
+/**
+ * Send a message to a specific Telegram chat
+ */
+export async function sendTelegramMessage(
+  chatId: string,
+  text: string,
+  options?: {
+    withStopButton?: boolean;
+    cycleKey?: string;
+  }
+): Promise<{ success: boolean; error?: string }> {
+  const token = getBotToken();
+  if (!token) {
+    return { success: false, error: 'TELEGRAM_BOT_TOKEN manquant dans les réglages' };
+  }
+
+  const payload: any = {
+    chat_id: chatId,
+    text,
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+  };
+
+  if (options?.withStopButton) {
+    payload.reply_markup = {
+      inline_keyboard: [
+        [
+          {
+            text: "✅ J'arrête mon téléphone",
+            callback_data: `curfew_stop:${options.cycleKey || ''}`,
+          },
+        ],
+      ],
+    };
+  }
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const data = (await res.json()) as any;
+    if (data.ok) {
+      return { success: true };
+    } else {
+      console.warn(`[Telegram Error] for ${chatId}:`, data.description);
+      return { success: false, error: data.description || 'Erreur Telegram API' };
+    }
+  } catch (err: any) {
+    console.error(`[Telegram Network Error] for ${chatId}:`, err);
+    return { success: false, error: err?.message || 'Erreur réseau vers Telegram' };
+  }
+}
+
+/**
+ * Answer callback queries (button taps) in Telegram
+ */
+async function answerCallbackQuery(callbackQueryId: string, text?: string) {
+  const token = getBotToken();
+  if (!token) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        callback_query_id: callbackQueryId,
+        text: text || 'Action enregistrée',
+      }),
+    });
+  } catch (err) {
+    console.warn('[Telegram] answerCallbackQuery failed:', err);
+  }
+}
+
+/**
+ * Poll Telegram updates to discover users who pressed /start or clicked inline buttons
+ */
+export async function pollTelegramUpdates(
+  onCurfewStopConfirmed?: (cycleKey?: string) => void
+): Promise<{ newSubscribers: number; totalSubscribers: number }> {
+  const token = getBotToken();
+  if (!token) return { newSubscribers: 0, totalSubscribers: subscribers.size };
+
+  let newSubscribersCount = 0;
+
+  try {
+    const url = `https://api.telegram.org/bot${token}/getUpdates?offset=${lastUpdateId + 1}&limit=30`;
+    const res = await fetch(url);
+    const data = (await res.json()) as any;
+
+    if (data.ok && Array.isArray(data.result)) {
+      for (const update of data.result) {
+        if (typeof update.update_id === 'number') {
+          lastUpdateId = Math.max(lastUpdateId, update.update_id);
+        }
+
+        // 1. Handle incoming chat messages (e.g. /start)
+        if (update.message && update.message.chat) {
+          const chat = update.message.chat;
+          const from = update.message.from || {};
+          const chatId = String(chat.id);
+          const name = from.first_name || chat.first_name || 'Utilisateur';
+          const username = from.username || chat.username;
+          const text = (update.message.text || '').trim();
+
+          const isNew = !subscribers.has(chatId);
+          if (isNew) {
+            subscribers.set(chatId, {
+              chatId,
+              name,
+              username,
+              enabled: true,
+              registeredAt: Date.now(),
+            });
+            saveTelegramSubscribers();
+            newSubscribersCount++;
+            console.log(`[Telegram] Registered new subscriber: ${name} (ID: ${chatId})`);
+
+            // Send welcoming confirmation
+            await sendTelegramMessage(
+              chatId,
+              `🌙 <b>Minimal Launcher : Bot connecté avec succès !</b>\n\n` +
+                `Bonjour <b>${name}</b>, votre compte Telegram est désormais relié à votre lanceur minimaliste.\n\n` +
+                `✨ <b>Avantages de cette connexion :</b>\n` +
+                `• Vos rappels de déconnexion sonneront et feront vibrer votre téléphone avec certitude, même avec l'écran verrouillé.\n` +
+                `• Vous pourrez couper les rappels de la nuit en 1 clic directement depuis Telegram sans avoir à rouvrir le site.`
+            );
+          } else if (text === '/start' || text.toLowerCase() === 'test') {
+            // Acknowledge re-start
+            await sendTelegramMessage(
+              chatId,
+              `🌙 <b>Minimal Launcher</b>\n\nVotre bot est opérationnel. Vos rappels de déconnexion programmés vous seront envoyés ici.`
+            );
+          }
+        }
+
+        // 2. Handle button clicks (callback query)
+        if (update.callback_query) {
+          const cb = update.callback_query;
+          const chatId = String(cb.message?.chat?.id || cb.from?.id);
+          const dataStr = String(cb.data || '');
+
+          if (dataStr.startsWith('curfew_stop')) {
+            const cycleKey = dataStr.split(':')[1] || undefined;
+            await answerCallbackQuery(cb.id, "Bonne nuit ! Vos rappels sont suspendus. 🌙");
+
+            await sendTelegramMessage(
+              chatId,
+              `✨ <b>Déconnexion enregistrée !</b>\n\nBravo pour ce pas vers votre sobriété numérique. Vos rappels sont coupés pour le reste de la nuit. Reposez-vous bien ! 🛌`
+            );
+
+            if (onCurfewStopConfirmed) {
+              onCurfewStopConfirmed(cycleKey);
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Telegram] pollTelegramUpdates error:', err);
+  }
+
+  return { newSubscribers: newSubscribersCount, totalSubscribers: subscribers.size };
+}
+
+/**
+ * Send test alert to all or specific Telegram subscriber
+ */
+export async function sendTestTelegramAlert(
+  targetChatId?: string
+): Promise<{ success: boolean; message: string }> {
+  const token = getBotToken();
+  if (!token) {
+    return {
+      success: false,
+      message:
+        'Le jeton TELEGRAM_BOT_TOKEN n’est pas configuré. Veuillez l’ajouter dans les Secrets de l’application.',
+    };
+  }
+
+  // Poll first to ensure any recent /start is processed
+  await pollTelegramUpdates();
+
+  const recipients = targetChatId
+    ? subscribers.has(targetChatId)
+      ? [subscribers.get(targetChatId)!]
+      : [{ chatId: targetChatId, name: 'Utilisateur', enabled: true, registeredAt: Date.now() }]
+    : getTelegramSubscribers();
+
+  if (recipients.length === 0) {
+    return {
+      success: false,
+      message:
+        'Aucun compte Telegram n’est encore relié. Ouvrez le bot Telegram et appuyez sur « Démarrer » (/start).',
+    };
+  }
+
+  let sentCount = 0;
+  for (const recipient of recipients) {
+    const res = await sendTelegramMessage(
+      recipient.chatId,
+      `🔔 <b>Test de notification Minimal Launcher</b>\n\n` +
+        `Votre bot Telegram fonctionne à merveille ! Vos rappels de déconnexion et de couvre-feu vous préviendront avec sonnerie et vibreur garantis, même lorsque votre téléphone est en veille ou verrouillé.\n\n` +
+        `<i>Essayez d'appuyer sur le bouton ci-dessous pour tester l'arrêt des rappels :</i>`,
+      { withStopButton: true, cycleKey: 'test-cycle' }
+    );
+    if (res.success) {
+      sentCount++;
+    }
+  }
+
+  if (sentCount > 0) {
+    return {
+      success: true,
+      message: `Notification envoyée avec succès sur Telegram (${sentCount} compte(s) contacté(s)) !`,
+    };
+  }
+
+  return {
+    success: false,
+    message: 'Impossible de délivrer le message sur Telegram. Vérifiez le chat ID ou le bot token.',
+  };
+}
+
+// Initial load
+loadTelegramSubscribers();

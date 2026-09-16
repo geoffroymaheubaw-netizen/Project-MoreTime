@@ -890,3 +890,96 @@ export function evaluateDisconnectTrigger(
     minutesElapsed: windowStatus.minutesElapsed,
   };
 }
+
+// -----------------------------------------------------------------------------
+// Telegram Bot Notification Helpers
+// -----------------------------------------------------------------------------
+export interface TelegramStatus {
+  configured: boolean;
+  botUsername: string | null;
+  botFirstName: string | null;
+  subscribersCount: number;
+  subscribers: Array<{
+    chatId: string;
+    name: string;
+    username?: string;
+    registeredAt: number;
+  }>;
+}
+
+/**
+ * Check if a Telegram bot is configured and get registered accounts
+ */
+export async function fetchTelegramStatus(): Promise<TelegramStatus | null> {
+  try {
+    const res = await fetch('/api/telegram/status');
+    if (!res.ok) return null;
+    return (await res.json()) as TelegramStatus;
+  } catch (err) {
+    console.warn('Failed to fetch telegram status:', err);
+    return null;
+  }
+}
+
+/**
+ * Poll Telegram to link new users who pressed /start
+ */
+export async function syncTelegramSubscribers(): Promise<TelegramStatus | null> {
+  try {
+    const res = await fetch('/api/telegram/sync', { method: 'POST' });
+    if (!res.ok) return null;
+    return (await res.json()) as TelegramStatus;
+  } catch (err) {
+    console.warn('Failed to sync telegram subscribers:', err);
+    return null;
+  }
+}
+
+/**
+ * Send an immediate test notification via Telegram Bot
+ */
+export async function testTelegramAlert(chatId?: string): Promise<{ success: boolean; message: string }> {
+  try {
+    const res = await fetch('/api/telegram/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatId }),
+    });
+    const data = await res.json();
+    return data;
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Erreur réseau vers le serveur' };
+  }
+}
+
+/**
+ * Syncs the curfew schedule with the server for Telegram and background dispatch
+ */
+export async function syncCurfewScheduleWithServer(
+  settings: DisconnectReminderSettings
+): Promise<boolean> {
+  try {
+    const timezoneOffset = new Date().getTimezoneOffset();
+    const res = await fetch('/api/curfew/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        settings: {
+          enabled: settings.enabled,
+          time: settings.time,
+          weekdayTime: settings.weekdayTime,
+          weekendTime: settings.weekendTime,
+          scheduleMode: settings.scheduleMode,
+          dayTimes: settings.dayTimes,
+          days: settings.days,
+          repeatIntervalMinutes: settings.repeatIntervalMinutes,
+          customMessage: settings.customMessage,
+          timezoneOffset,
+        },
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
